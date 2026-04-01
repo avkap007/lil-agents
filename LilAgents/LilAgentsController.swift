@@ -159,22 +159,13 @@ class LilAgentsController {
         return NSScreen.main
     }
 
-    /// The dock lives on the screen where visibleFrame.origin.y > frame.origin.y (bottom dock)
-    /// On screens without the dock, visibleFrame.origin.y == frame.origin.y
-    private func screenHasDock(_ screen: NSScreen) -> Bool {
-        return screen.visibleFrame.origin.y > screen.frame.origin.y
-    }
-
     private func shouldShowCharacters(on screen: NSScreen) -> Bool {
-        if screenHasDock(screen) {
-            return true
-        }
-
-        // With dock auto-hide enabled on the active desktop, the dock can still be
-        // present even though visibleFrame starts at the screen origin. In fullscreen
-        // spaces, both the dock and menu bar are absent, so visibleFrame matches frame.
-        let menuBarVisible = screen.visibleFrame.maxY < screen.frame.maxY
-        return dockAutohideEnabled() && screen == NSScreen.main && menuBarVisible
+        DockVisibility.shouldShowCharacters(
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            isMainScreen: screen == NSScreen.main,
+            dockAutohideEnabled: dockAutohideEnabled()
+        )
     }
 
     @discardableResult
