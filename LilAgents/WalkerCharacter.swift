@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import QuartzCore
 
 enum CharacterSize: String, CaseIterable {
     case large, medium, small
@@ -20,6 +21,12 @@ enum CharacterSize: String, CaseIterable {
 }
 
 class WalkerCharacter {
+    /// Which chat UI initiated chrome actions (copy / refresh) when dock + detached can both exist.
+    private enum ChatChromeHost {
+        case dockPopover
+        case detachedWindow
+    }
+
     let videoName: String
     let name: String
     var provider: AgentProvider {
@@ -51,8 +58,57 @@ class WalkerCharacter {
     private(set) var displayHeight: CGFloat = 200
     var displayWidth: CGFloat { displayHeight * (videoWidth / videoHeight) }
 
-    // Walk timing (per-character, from frame analysis)
-    let videoDuration: CFTimeInterval = 10.0
+    /// Scales the dock window vs the menu “character size” (Bruce ≈ 1.0; Red needs >1 to match on-screen scale).
+    var displayScale: CGFloat = 1.0 {
+        didSet {
+            displayHeight = size.height * displayScale
+            if window != nil {
+                updateDimensions()
+            }
+        }
+    }
+
+    /// Added to `statusBar + index` so a character can stay visually above another when they overlap.
+    var windowLevelBoost: Int = 0
+
+    /// When set, horizontal sliding only runs while looped video time is inside this range; before/after, X stays fixed (idle / wave / idle tail in combined clips).
+    var horizontalMoveVideoRange: ClosedRange<CFTimeInterval>? = nil
+    /// When set, `startWalk()` plays this walk-only clip instead of `videoName` (combined). Requires alpha-tuned timing in `walkHorizontalMoveVideoRange`.
+    var walkLoopVideoName: String? = nil
+    /// X-travel window for the dedicated walk clip (seconds into that MOV). If nil, a linear window over most of `activeLoopDuration` is used.
+    var walkHorizontalMoveVideoRange: ClosedRange<CFTimeInterval>? = nil
+    /// When set, this clip loops while paused (standing); combined `videoName` is unused for walks if `walkLoopVideoName` is set.
+    var idleLoopVideoName: String? = nil
+    /// Looped idle plays slightly slower for calmer standing motion (`AVPlayer.rate`).
+    var idlePlaybackRate: Float = 0.88
+    /// Walk clip: small slowdown; spacing is mostly from longer pauses, not extreme rate.
+    var walkPlaybackRate: Float = 0.88
+    /// Wave clip: played once when opening the dock popover and occasionally as an ambient one-shot at the dock.
+    var popoverWaveLoopVideoName: String? = nil
+    /// Playback rate for the popover wave loop.
+    var popoverWavePlaybackRate: Float = 0.9
+    /// Roughly every this many seconds, play the popover wave clip once while at the dock (not while typing).
+    var ambientWaveIntervalSeconds: CFTimeInterval = 15 * 60
+    /// Extra random delay (seconds) added to each ambient wave schedule.
+    var ambientWaveJitterRange: ClosedRange<Double> = -30...120
+    /// After closing the popover, don’t schedule an ambient wave for at least this many seconds (avoids wave right after typing).
+    var ambientWaveCooldownAfterPopoverSeconds: CFTimeInterval = 6 * 60
+    /// Muse: probability [0,1] to play `completionOneShotVideoName` when a turn completes. Merit: keep at 0.
+    var completionOneShotProbability: Float = 1.0
+    /// Optional one-shot completion animation (played when an agent turn completes).
+    var completionOneShotVideoName: String? = nil
+    private var oneShotEndObserver: NSObjectProtocol?
+    private var popoverIntroWaveObserver: NSObjectProtocol?
+    private var wasPlayingBeforeOneShot = false
+    private var isPlayingOneShot = false
+    /// When true, `walkProgress` uses `walkHorizontalMoveVideoRange` (dedicated walk MOV).
+    private var useWalkClipMoveRange = false
+    /// Next time an ambient “desk” wave may fire (wall clock).
+    private var nextAmbientWaveTime: CFTimeInterval = 0
+
+    // Walk timing (per-character, from frame analysis; combined clip is ~10s)
+    /// Duration of the clip currently loaded into the looper (combined ~10s, idle loop ~2.08s).
+    private(set) var activeLoopDuration: CFTimeInterval = 10.0
     var accelStart: CFTimeInterval = 3.0
     var fullSpeedStart: CFTimeInterval = 3.75
     var decelStart: CFTimeInterval = 7.5
@@ -84,18 +140,28 @@ class WalkerCharacter {
     var isIdleForPopover = false
     var popoverWindow: NSWindow?
     var terminalView: TerminalView?
+    /// Chat UI in a popped-out window (separate from dock popover).
+    var detachedChatWindow: NSWindow?
+    var detachedTerminalView: TerminalView?
+    var detachedSession: (any AgentSession)?
+    /// Provider for the popped-out chat only (in-memory). Dock `provider` UserDefaults stay separate.
+    private var detachedProvider: AgentProvider?
     var session: (any AgentSession)?
     var clickOutsideMonitor: Any?
     var escapeKeyMonitor: Any?
     var currentStreamingText = ""
     weak var controller: LilAgentsController?
     var themeOverride: PopoverTheme?
-    var isAgentBusy: Bool { session?.isBusy ?? false }
+    var isAgentBusy: Bool { (session?.isBusy ?? false) || (detachedSession?.isBusy ?? false) }
     var thinkingBubbleWindow: NSWindow?
     private(set) var isManuallyVisible = true
     private var environmentHiddenAt: CFTimeInterval?
     private var wasPopoverVisibleBeforeEnvironmentHide = false
+    private var wasDetachedVisibleBeforeEnvironmentHide = false
     private var wasBubbleVisibleBeforeEnvironmentHide = false
+    private var detachedWindowCloseObserver: NSObjectProtocol?
+    /// Which window’s title bar opened the provider menu (dock popover vs detached).
+    private weak var providerMenuHostWindow: NSWindow?
 
     init(videoName: String, name: String) {
         self.videoName = videoName
@@ -106,7 +172,7 @@ class WalkerCharacter {
     // MARK: - Setup
 
     func updateDimensions() {
-        displayHeight = size.height
+        displayHeight = size.height * displayScale
         let newWidth = displayWidth
         let newHeight = displayHeight
         
@@ -129,18 +195,13 @@ class WalkerCharacter {
     }
 
     func setup() {
-        guard let videoURL = Bundle.main.url(forResource: videoName, withExtension: "mov") else {
-            print("Video \(videoName) not found")
-            return
-        }
-
-        let asset = AVAsset(url: videoURL)
         queuePlayer = AVQueuePlayer()
-        looper = AVPlayerLooper(player: queuePlayer, templateItem: AVPlayerItem(asset: asset))
+        queuePlayer.automaticallyWaitsToMinimizeStalling = false
 
         playerLayer = AVPlayerLayer(player: queuePlayer)
         playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = NSColor.clear.cgColor
+        playerLayer.isOpaque = false
         playerLayer.frame = CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight)
 
         let screen = NSScreen.main!
@@ -166,10 +227,220 @@ class WalkerCharacter {
         hostView.character = self
         hostView.wantsLayer = true
         hostView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostView.layer?.isOpaque = false
         hostView.layer?.addSublayer(playerLayer)
 
         window.contentView = hostView
         window.orderFrontRegardless()
+
+        let initialClip = idleLoopVideoName ?? videoName
+        playLoop(videoName: initialClip)
+        if idleLoopVideoName != nil {
+            queuePlayer.play()
+        } else {
+            queuePlayer.pause()
+            queuePlayer.seek(to: .zero)
+        }
+        refreshPlaybackRateAfterClipChange()
+        scheduleNextAmbientWave()
+    }
+
+    deinit {
+        if let observer = oneShotEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = popoverIntroWaveObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = detachedWindowCloseObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    private func playLoop(videoName: String) {
+        guard let url = Bundle.main.url(forResource: videoName, withExtension: "mov") else {
+            print("Video \(videoName) not found")
+            return
+        }
+
+        if let observer = oneShotEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+            oneShotEndObserver = nil
+        }
+        if let observer = popoverIntroWaveObserver {
+            NotificationCenter.default.removeObserver(observer)
+            popoverIntroWaveObserver = nil
+        }
+
+        queuePlayer.removeAllItems()
+        let asset = AVAsset(url: url)
+        let dur = CMTimeGetSeconds(asset.duration)
+        activeLoopDuration = dur.isFinite && dur > 0 ? dur : 10.0
+        let item = AVPlayerItem(asset: asset)
+        looper = AVPlayerLooper(player: queuePlayer, templateItem: item)
+        isPlayingOneShot = false
+    }
+
+    private func refreshPlaybackRateAfterClipChange() {
+        guard !isPlayingOneShot else { return }
+        if isWalking {
+            queuePlayer.rate = walkPlaybackRate
+        } else if idleLoopVideoName != nil {
+            queuePlayer.rate = idlePlaybackRate
+        } else {
+            queuePlayer.rate = 1.0
+        }
+    }
+
+    private func scheduleNextAmbientWave() {
+        let jitter = Double.random(in: ambientWaveJitterRange)
+        nextAmbientWaveTime = CACurrentMediaTime() + ambientWaveIntervalSeconds + jitter
+    }
+
+    private func fallbackWalkLinearRange() -> ClosedRange<CFTimeInterval> {
+        let d = activeLoopDuration
+        let hi = max(d - 0.12, 0.2)
+        return 0.08...hi
+    }
+
+    /// Standing / popover / pause: idle-only loop when configured; otherwise frozen first frame of combined clip.
+    private func switchToIdleStandingAnimation() {
+        if let idle = idleLoopVideoName {
+            playLoop(videoName: idle)
+            queuePlayer.play()
+            refreshPlaybackRateAfterClipChange()
+        } else {
+            queuePlayer.pause()
+            queuePlayer.seek(to: .zero)
+        }
+    }
+
+    /// Single wave when opening the dock popover, then return to standing idle while you chat.
+    private func playPopoverIntroWaveOneShotThenIdle() {
+        guard let clip = popoverWaveLoopVideoName, !clip.isEmpty else {
+            switchToIdleStandingAnimation()
+            return
+        }
+        guard let url = Bundle.main.url(forResource: clip, withExtension: "mov") else {
+            switchToIdleStandingAnimation()
+            return
+        }
+
+        if let observer = popoverIntroWaveObserver {
+            NotificationCenter.default.removeObserver(observer)
+            popoverIntroWaveObserver = nil
+        }
+
+        looper?.disableLooping()
+        looper = nil
+        queuePlayer.removeAllItems()
+
+        let item = AVPlayerItem(url: url)
+        popoverIntroWaveObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            if let obs = self.popoverIntroWaveObserver {
+                NotificationCenter.default.removeObserver(obs)
+                self.popoverIntroWaveObserver = nil
+            }
+            self.isPlayingOneShot = false
+            self.switchToIdleStandingAnimation()
+            self.queuePlayer.play()
+        }
+
+        isPlayingOneShot = true
+        queuePlayer.insert(item, after: nil)
+        queuePlayer.seek(to: .zero)
+        queuePlayer.rate = popoverWavePlaybackRate
+        queuePlayer.play()
+    }
+
+    private func restoreLooperAfterOneShot() {
+        if let idle = idleLoopVideoName, !isWalking {
+            playLoop(videoName: idle)
+            queuePlayer.play()
+            refreshPlaybackRateAfterClipChange()
+            return
+        }
+        let clip = walkLoopVideoName ?? videoName
+        useWalkClipMoveRange = walkLoopVideoName != nil && isWalking
+        playLoop(videoName: clip)
+        if wasPlayingBeforeOneShot && isWalking && !isPaused {
+            queuePlayer.play()
+            refreshPlaybackRateAfterClipChange()
+        } else {
+            queuePlayer.pause()
+            queuePlayer.seek(to: .zero)
+            refreshPlaybackRateAfterClipChange()
+        }
+    }
+
+    private func playCompletionOneShotIfConfigured() {
+        guard let clip = completionOneShotVideoName, !clip.isEmpty else { return }
+        guard Float.random(in: 0...1) < completionOneShotProbability else { return }
+        guard !isPlayingOneShot else { return }
+        guard let url = Bundle.main.url(forResource: clip, withExtension: "mov") else {
+            print("Video \(clip) not found")
+            return
+        }
+
+        wasPlayingBeforeOneShot = queuePlayer.rate > 0
+        looper?.disableLooping()
+        looper = nil
+        queuePlayer.removeAllItems()
+
+        let oneShot = AVPlayerItem(url: url)
+        oneShotEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: oneShot,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.restoreLooperAfterOneShot()
+        }
+
+        isPlayingOneShot = true
+        queuePlayer.insert(oneShot, after: nil)
+        queuePlayer.seek(to: .zero)
+        queuePlayer.rate = 1.0
+        queuePlayer.play()
+    }
+
+    /// Occasional wave at the dock (not while the terminal is open).
+    private func playAmbientWaveOneShotIfDue(now: CFTimeInterval) {
+        guard let clip = popoverWaveLoopVideoName, !clip.isEmpty else { return }
+        guard now >= nextAmbientWaveTime else { return }
+        guard !isPlayingOneShot, !isWalking, !isIdleForPopover else { return }
+        guard let url = Bundle.main.url(forResource: clip, withExtension: "mov") else { return }
+
+        wasPlayingBeforeOneShot = queuePlayer.rate > 0
+        looper?.disableLooping()
+        looper = nil
+        queuePlayer.removeAllItems()
+
+        let item = AVPlayerItem(url: url)
+        if let observer = oneShotEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        oneShotEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.isPlayingOneShot = false
+            self.restoreLooperAfterOneShot()
+            self.scheduleNextAmbientWave()
+        }
+
+        isPlayingOneShot = true
+        queuePlayer.insert(item, after: nil)
+        queuePlayer.seek(to: .zero)
+        queuePlayer.rate = 1.0
+        queuePlayer.play()
     }
 
     // MARK: - Visibility
@@ -179,6 +450,20 @@ class WalkerCharacter {
         if visible {
             if environmentHiddenAt == nil {
                 window.orderFrontRegardless()
+            }
+            if isWalking {
+                queuePlayer.play()
+                queuePlayer.rate = walkPlaybackRate
+            } else if isIdleForPopover {
+                if isPlayingOneShot {
+                    queuePlayer.play()
+                    queuePlayer.rate = popoverWavePlaybackRate
+                } else {
+                    switchToIdleStandingAnimation()
+                }
+            } else if idleLoopVideoName != nil, isPaused {
+                queuePlayer.play()
+                queuePlayer.rate = idlePlaybackRate
             }
         } else {
             queuePlayer.pause()
@@ -193,11 +478,13 @@ class WalkerCharacter {
 
         environmentHiddenAt = CACurrentMediaTime()
         wasPopoverVisibleBeforeEnvironmentHide = popoverWindow?.isVisible ?? false
+        wasDetachedVisibleBeforeEnvironmentHide = detachedChatWindow?.isVisible ?? false
         wasBubbleVisibleBeforeEnvironmentHide = thinkingBubbleWindow?.isVisible ?? false
 
         queuePlayer.pause()
         window.orderOut(nil)
         popoverWindow?.orderOut(nil)
+        detachedChatWindow?.orderOut(nil)
         thinkingBubbleWindow?.orderOut(nil)
     }
 
@@ -210,12 +497,24 @@ class WalkerCharacter {
         pauseEndTime += hiddenDuration
         completionBubbleExpiry += hiddenDuration
         lastPhraseUpdate += hiddenDuration
+        nextAmbientWaveTime += hiddenDuration
 
         guard isManuallyVisible else { return }
 
         window.orderFrontRegardless()
         if isWalking {
             queuePlayer.play()
+            queuePlayer.rate = walkPlaybackRate
+        } else if isIdleForPopover {
+            if isPlayingOneShot {
+                queuePlayer.play()
+                queuePlayer.rate = popoverWavePlaybackRate
+            } else {
+                switchToIdleStandingAnimation()
+            }
+        } else if idleLoopVideoName != nil {
+            queuePlayer.play()
+            queuePlayer.rate = idlePlaybackRate
         }
 
         if isIdleForPopover && wasPopoverVisibleBeforeEnvironmentHide {
@@ -224,6 +523,14 @@ class WalkerCharacter {
             popoverWindow?.makeKey()
             if let terminal = terminalView {
                 popoverWindow?.makeFirstResponder(terminal.inputField)
+            }
+        }
+
+        if wasDetachedVisibleBeforeEnvironmentHide, let detached = detachedChatWindow {
+            detached.orderFrontRegardless()
+            detached.makeKey()
+            if let field = detachedTerminalView?.inputField {
+                detached.makeFirstResponder(field)
             }
         }
 
@@ -253,8 +560,7 @@ class WalkerCharacter {
         isIdleForPopover = true
         isWalking = false
         isPaused = true
-        queuePlayer.pause()
-        queuePlayer.seek(to: .zero)
+        playPopoverIntroWaveOneShotThenIdle()
 
         if popoverWindow == nil {
             createPopoverWindow()
@@ -264,7 +570,7 @@ class WalkerCharacter {
         terminalView?.inputField.isEditable = false
         terminalView?.inputField.placeholderString = ""
         let welcome = """
-        hey! we're bruce and jazz — your lil dock agents.
+        hey! we're merit and muse — your lil dock agents.
 
         click either of us to open a Claude AI chat. we'll walk around while you work and let you know when Claude's thinking.
 
@@ -297,8 +603,10 @@ class WalkerCharacter {
         isIdleForPopover = false
         isOnboarding = false
         isPaused = true
-        pauseEndTime = CACurrentMediaTime() + Double.random(in: 1.0...3.0)
-        queuePlayer.seek(to: .zero)
+        pauseEndTime = CACurrentMediaTime() + Double.random(in: 25.0...50.0)
+        switchToIdleStandingAnimation()
+        let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
+        nextAmbientWaveTime = max(nextAmbientWaveTime, push)
         controller?.completeOnboarding()
     }
 
@@ -313,22 +621,25 @@ class WalkerCharacter {
         isIdleForPopover = true
         isWalking = false
         isPaused = true
-        queuePlayer.pause()
-        queuePlayer.seek(to: .zero)
+        playPopoverIntroWaveOneShotThenIdle()
 
         // Always clear any bubble (thinking or completion) when popover opens
         showingCompletion = false
         hideBubble()
 
+        if popoverWindow == nil {
+            createPopoverWindow()
+        }
+
         if session == nil {
             let newSession = provider.createSession()
             session = newSession
-            wireSession(newSession)
+            if let term = terminalView {
+                wireSession(newSession, terminal: term)
+            }
             newSession.start()
-        }
-
-        if popoverWindow == nil {
-            createPopoverWindow()
+        } else if let s = session, let term = terminalView {
+            wireSession(s, terminal: term)
         }
 
         if let terminal = terminalView, let session = session, !session.history.isEmpty {
@@ -386,8 +697,11 @@ class WalkerCharacter {
             showBubble(text: currentPhrase, isCompletion: false)
         }
 
-        let delay = Double.random(in: 2.0...5.0)
+        let delay = Double.random(in: 30.0...60.0)
         pauseEndTime = CACurrentMediaTime() + delay
+        switchToIdleStandingAnimation()
+        let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
+        nextAmbientWaveTime = max(nextAmbientWaveTime, push)
     }
 
     private func removeEventMonitors() {
@@ -462,6 +776,16 @@ class WalkerCharacter {
         clickArea.action = #selector(showProviderMenu(_:))
         titleBar.addSubview(clickArea)
 
+        let popOutBtn = NSButton(frame: NSRect(x: popoverWidth - 68, y: 5, width: 16, height: 16))
+        popOutBtn.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: "Pop out chat")
+        popOutBtn.imageScaling = .scaleProportionallyDown
+        popOutBtn.bezelStyle = .inline
+        popOutBtn.isBordered = false
+        popOutBtn.contentTintColor = t.titleText.withAlphaComponent(0.75)
+        popOutBtn.target = self
+        popOutBtn.action = #selector(popOutChatToDetachedWindow)
+        titleBar.addSubview(popOutBtn)
+
         let refreshBtn = NSButton(frame: NSRect(x: popoverWidth - 48, y: 5, width: 16, height: 16))
         refreshBtn.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         refreshBtn.imageScaling = .scaleProportionallyDown
@@ -496,7 +820,7 @@ class WalkerCharacter {
             self?.session?.send(message: message)
         }
         terminal.onClearRequested = { [weak self] in
-            self?.resetSession()
+            self?.resetSession(for: .dockPopover)
         }
         container.addSubview(terminal)
 
@@ -505,102 +829,447 @@ class WalkerCharacter {
         terminalView = terminal
     }
 
-    func resetSession() {
-        session?.terminate()
-        session = nil
-        currentStreamingText = ""
-        showingCompletion = false
-        currentPhrase = ""
-        completionBubbleExpiry = 0
-        hideBubble()
-        terminalView?.resetState()
-        terminalView?.showSessionMessage()
-        let newSession = provider.createSession()
-        session = newSession
-        wireSession(newSession)
-        newSession.start()
+    /// After `terminalView` is replaced (e.g. style switch), rebind session callbacks to the new view.
+    func rewirePopoverSessionIfNeeded() {
+        guard let s = session, let term = terminalView else { return }
+        wireSession(s, terminal: term)
     }
 
-    private func wireSession(_ session: any AgentSession) {
-        session.onText = { [weak self] text in
+    /// Close popped-out chat without going through `willClose` teardown (e.g. global provider switch).
+    func discardDetachedChatSilently() {
+        if let o = detachedWindowCloseObserver {
+            NotificationCenter.default.removeObserver(o)
+            detachedWindowCloseObserver = nil
+        }
+        detachedSession?.terminate()
+        detachedSession = nil
+        detachedTerminalView = nil
+        detachedProvider = nil
+        detachedChatWindow?.close()
+        detachedChatWindow = nil
+    }
+
+    private func resetSession(for host: ChatChromeHost) {
+        switch host {
+        case .detachedWindow:
+            guard detachedChatWindow != nil else { return }
+            detachedSession?.terminate()
+            currentStreamingText = ""
+            showingCompletion = false
+            currentPhrase = ""
+            completionBubbleExpiry = 0
+            hideBubble()
+            detachedTerminalView?.resetState()
+            detachedTerminalView?.showSessionMessage()
+            let p = detachedProvider ?? provider
+            let newSession = p.createSession()
+            detachedSession = newSession
+            if let term = detachedTerminalView {
+                term.provider = p
+                wireSession(newSession, terminal: term)
+                term.onSendMessage = { [weak self] message in
+                    self?.detachedSession?.send(message: message)
+                }
+                term.onClearRequested = { [weak self] in
+                    self?.resetSession(for: .detachedWindow)
+                }
+            }
+            newSession.start()
+
+        case .dockPopover:
+            session?.terminate()
+            session = nil
+            currentStreamingText = ""
+            showingCompletion = false
+            currentPhrase = ""
+            completionBubbleExpiry = 0
+            hideBubble()
+            terminalView?.resetState()
+            terminalView?.showSessionMessage()
+            let newSession = provider.createSession()
+            session = newSession
+            if let term = terminalView {
+                wireSession(newSession, terminal: term)
+            }
+            newSession.start()
+        }
+    }
+
+    private func wireSession(_ session: any AgentSession, terminal: TerminalView) {
+        session.onText = { [weak self, weak terminal] text in
             self?.currentStreamingText += text
-            self?.terminalView?.appendStreamingText(text)
+            terminal?.appendStreamingText(text)
         }
 
-        session.onTurnComplete = { [weak self] in
-            self?.terminalView?.endStreaming()
+        session.onTurnComplete = { [weak self, weak terminal] in
+            terminal?.endStreaming()
             self?.playCompletionSound()
             self?.showCompletionBubble()
+            self?.playCompletionOneShotIfConfigured()
         }
 
-        session.onError = { [weak self] text in
-            self?.terminalView?.appendError(text)
+        session.onError = { [weak terminal] text in
+            terminal?.appendError(text)
         }
 
-        session.onToolUse = { [weak self] toolName, input in
+        session.onToolUse = { [weak self, weak terminal] toolName, input in
             guard let self = self else { return }
             let summary = self.formatToolInput(input)
-            self.terminalView?.appendToolUse(toolName: toolName, summary: summary)
+            terminal?.appendToolUse(toolName: toolName, summary: summary)
         }
 
-        session.onToolResult = { [weak self] summary, isError in
-            self?.terminalView?.appendToolResult(summary: summary, isError: isError)
+        session.onToolResult = { [weak terminal] summary, isError in
+            terminal?.appendToolResult(summary: summary, isError: isError)
         }
 
-        session.onProcessExit = { [weak self] in
+        session.onProcessExit = { [weak self, weak terminal] in
             guard let self = self else { return }
-            self.terminalView?.endStreaming()
-            self.terminalView?.appendError("\(self.provider.displayName) session ended.")
+            terminal?.endStreaming()
+            let pname = (terminal === self.detachedTerminalView)
+                ? (self.detachedProvider ?? self.provider).displayName
+                : self.provider.displayName
+            terminal?.appendError("\(pname) session ended.")
         }
 
         session.onSessionReady = { }
     }
 
+    @objc func popOutChatToDetachedWindow() {
+        guard !isOnboarding, detachedChatWindow == nil else { return }
+        guard let sess = session, let term = terminalView, popoverWindow != nil else { return }
+
+        removeEventMonitors()
+        term.removeFromSuperview()
+        popoverWindow?.orderOut(nil)
+        popoverWindow = nil
+
+        detachedSession = sess
+        session = nil
+        detachedTerminalView = term
+        terminalView = nil
+        detachedProvider = provider
+
+        wireSession(sess, terminal: term)
+        term.onSendMessage = { [weak self] message in
+            self?.detachedSession?.send(message: message)
+        }
+        term.onClearRequested = { [weak self] in
+            self?.resetSession(for: .detachedWindow)
+        }
+
+        createDetachedChatWindowHostingExistingTerminal()
+
+        isIdleForPopover = false
+
+        if showingCompletion {
+            completionBubbleExpiry = CACurrentMediaTime() + 3.0
+            showBubble(text: currentPhrase, isCompletion: true)
+        } else if isAgentBusy {
+            currentPhrase = ""
+            lastPhraseUpdate = 0
+            updateThinkingPhrase()
+            showBubble(text: currentPhrase, isCompletion: false)
+        }
+
+        let delay = Double.random(in: 30.0...60.0)
+        pauseEndTime = CACurrentMediaTime() + delay
+        switchToIdleStandingAnimation()
+        let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
+        nextAmbientWaveTime = max(nextAmbientWaveTime, push)
+
+        detachedChatWindow?.center()
+        detachedChatWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if let field = detachedTerminalView?.inputField {
+            detachedChatWindow?.makeFirstResponder(field)
+        }
+    }
+
+    private func createDetachedChatWindowHostingExistingTerminal() {
+        guard let term = detachedTerminalView else { return }
+        let t = resolvedTheme
+        let winW: CGFloat = 760
+        let winH: CGFloat = 520
+
+        let win = KeyableWindow(
+            contentRect: NSRect(x: 0, y: 0, width: winW, height: winH),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
+        win.isMovableByWindowBackground = true
+        win.minSize = NSSize(width: 480, height: 320)
+        win.isOpaque = false
+        win.backgroundColor = .clear
+        win.hasShadow = true
+        win.level = .floating
+        win.collectionBehavior = [.moveToActiveSpace]
+        let brightness = t.popoverBg.redComponent * 0.299 + t.popoverBg.greenComponent * 0.587 + t.popoverBg.blueComponent * 0.114
+        win.appearance = NSAppearance(named: brightness < 0.5 ? .darkAqua : .aqua)
+        let detachedP = detachedProvider ?? provider
+        win.title = "\(name) — \(detachedP.displayName)"
+        term.provider = detachedP
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: winW, height: winH))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = t.popoverBg.cgColor
+        container.layer?.cornerRadius = t.popoverCornerRadius
+        container.layer?.masksToBounds = true
+        container.layer?.borderWidth = t.popoverBorderWidth
+        container.layer?.borderColor = t.popoverBorder.cgColor
+        container.autoresizingMask = [.width, .height]
+
+        let titleBar = NSView(frame: NSRect(x: 0, y: winH - 28, width: winW, height: 28))
+        titleBar.wantsLayer = true
+        titleBar.layer?.backgroundColor = t.titleBarBg.cgColor
+        titleBar.autoresizingMask = [.width, .maxYMargin]
+        container.addSubview(titleBar)
+
+        let titleLabel = NSTextField(labelWithString: t.titleString(for: detachedP))
+        titleLabel.font = t.titleFont
+        titleLabel.textColor = t.titleText
+        titleLabel.sizeToFit()
+        titleLabel.frame.origin = NSPoint(x: Self.detachedTitleLeadingInset, y: 6)
+        titleBar.addSubview(titleLabel)
+
+        let arrowBtn = NSButton(frame: NSRect(x: titleLabel.frame.maxX + 2, y: 5, width: 16, height: 16))
+        arrowBtn.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Switch provider")
+        arrowBtn.imageScaling = .scaleProportionallyDown
+        arrowBtn.bezelStyle = .inline
+        arrowBtn.isBordered = false
+        arrowBtn.contentTintColor = t.titleText.withAlphaComponent(0.75)
+        arrowBtn.target = self
+        arrowBtn.action = #selector(showProviderMenu(_:))
+        arrowBtn.tag = Self.detachedProviderArrowButtonTag
+        titleBar.addSubview(arrowBtn)
+
+        let clickW = max(arrowBtn.frame.maxX - Self.detachedTitleLeadingInset + 8, 48)
+        let clickArea = NSButton(frame: NSRect(x: Self.detachedTitleLeadingInset, y: 0, width: clickW, height: 28))
+        clickArea.isTransparent = true
+        clickArea.target = self
+        clickArea.action = #selector(showProviderMenu(_:))
+        clickArea.tag = Self.detachedProviderClickAreaTag
+        titleBar.addSubview(clickArea)
+
+        let refreshBtn = NSButton(frame: NSRect(x: winW - 48, y: 5, width: 16, height: 16))
+        refreshBtn.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
+        refreshBtn.imageScaling = .scaleProportionallyDown
+        refreshBtn.bezelStyle = .inline
+        refreshBtn.isBordered = false
+        refreshBtn.contentTintColor = t.titleText.withAlphaComponent(0.75)
+        refreshBtn.target = self
+        refreshBtn.action = #selector(refreshSessionFromButton)
+        refreshBtn.autoresizingMask = .minXMargin
+        titleBar.addSubview(refreshBtn)
+
+        let copyBtn = NSButton(frame: NSRect(x: winW - 28, y: 5, width: 16, height: 16))
+        copyBtn.image = NSImage(systemSymbolName: "square.on.square", accessibilityDescription: "Copy")
+        copyBtn.imageScaling = .scaleProportionallyDown
+        copyBtn.bezelStyle = .inline
+        copyBtn.isBordered = false
+        copyBtn.contentTintColor = t.titleText.withAlphaComponent(0.75)
+        copyBtn.autoresizingMask = .minXMargin
+        copyBtn.target = self
+        copyBtn.action = #selector(copyLastResponseFromButton)
+        titleBar.addSubview(copyBtn)
+
+        let sep = NSView(frame: NSRect(x: 0, y: winH - 29, width: winW, height: 1))
+        sep.wantsLayer = true
+        sep.layer?.backgroundColor = t.separatorColor.cgColor
+        sep.autoresizingMask = [.width, .maxYMargin]
+        container.addSubview(sep)
+
+        term.frame = NSRect(x: 0, y: 0, width: winW, height: winH - 29)
+        term.autoresizingMask = [.width, .height]
+        container.addSubview(term)
+
+        win.contentView = container
+
+        // Strong capture for the async check: `windowNumber` is not reliable while a window is closing (can be 0).
+        let closingDetachedWindow = win
+        detachedWindowCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: closingDetachedWindow,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            // Defer teardown: mutating session / views during the synchronous `willClose` path can hang AppKit.
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                guard self.detachedChatWindow === closingDetachedWindow else { return }
+                self.teardownDetachedChatWindow()
+            }
+        }
+
+        detachedChatWindow = win
+    }
+
+    private func teardownDetachedChatWindow() {
+        if let o = detachedWindowCloseObserver {
+            NotificationCenter.default.removeObserver(o)
+            detachedWindowCloseObserver = nil
+        }
+        detachedSession?.terminate()
+        detachedSession = nil
+        detachedTerminalView = nil
+        detachedProvider = nil
+        detachedChatWindow = nil
+    }
+
+    /// Updates popped-out window chrome when the global style changes (window stays open).
+    func refreshDetachedChromeTheme() {
+        guard let container = detachedChatWindow?.contentView else { return }
+        let t = resolvedTheme
+        container.layer?.backgroundColor = t.popoverBg.cgColor
+        container.layer?.borderColor = t.popoverBorder.cgColor
+        for view in container.subviews {
+            if abs(view.frame.height - 1) < 0.5 {
+                view.layer?.backgroundColor = t.separatorColor.cgColor
+            }
+        }
+        if let container = detachedChatWindow?.contentView,
+           let titleBar = container.subviews.first(where: { abs($0.frame.height - 28) < 0.5 && abs($0.frame.maxY - container.bounds.height) < 2 }) {
+            titleBar.layer?.backgroundColor = t.titleBarBg.cgColor
+            for sub in titleBar.subviews {
+                if let tf = sub as? NSTextField {
+                    tf.textColor = t.titleText
+                    tf.font = t.titleFont
+                }
+                if let btn = sub as? NSButton, btn.image != nil {
+                    btn.contentTintColor = t.titleText.withAlphaComponent(0.75)
+                }
+            }
+        }
+        let brightness = t.popoverBg.redComponent * 0.299 + t.popoverBg.greenComponent * 0.587 + t.popoverBg.blueComponent * 0.114
+        detachedChatWindow?.appearance = NSAppearance(named: brightness < 0.5 ? .darkAqua : .aqua)
+        updateDetachedTitleBarProviderLabels()
+    }
+
     @objc func showProviderMenu(_ sender: Any) {
+        guard let view = sender as? NSView, let hostWindow = view.window else { return }
+        guard let titleBar = view.superview, abs(titleBar.frame.height - 28) < 2 else { return }
+
+        providerMenuHostWindow = hostWindow
         let menu = NSMenu()
         let menuFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+        let selected: AgentProvider = (hostWindow === detachedChatWindow) ? (detachedProvider ?? provider) : provider
         for p in AgentProvider.allCases {
             let item = NSMenuItem(title: p.displayName, action: #selector(providerMenuItemSelected(_:)), keyEquivalent: "")
             item.target = self
             item.attributedTitle = NSAttributedString(string: p.displayName, attributes: [.font: menuFont])
             item.representedObject = p.rawValue
-            if p == provider {
-                item.state = .on
-            }
+            item.state = p == selected ? .on : .off
             if !p.isAvailable {
                 item.isEnabled = false
             }
             menu.addItem(item)
         }
-        // Show menu below the title bar area
-        if let titleBar = popoverWindow?.contentView?.subviews.first(where: { $0.frame.origin.y > 0 && $0.frame.height == 28 }) {
-            menu.popUp(positioning: nil, at: NSPoint(x: 10, y: 0), in: titleBar)
-        }
+        // Detached title row is inset for traffic lights; anchor under the clicked control (not x:10).
+        let menuX: CGFloat = (hostWindow === detachedChatWindow) ? view.frame.minX : 10
+        menu.popUp(positioning: nil, at: NSPoint(x: menuX, y: 0), in: titleBar)
     }
 
     @objc func providerMenuItemSelected(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
-              let newProvider = AgentProvider(rawValue: raw),
-              newProvider != provider else { return }
-        provider = newProvider
-        // Terminate existing session and rebuild popover for new provider
-        session?.terminate()
-        session = nil
-        popoverWindow?.orderOut(nil)
-        popoverWindow = nil
-        terminalView = nil
-        thinkingBubbleWindow?.orderOut(nil)
-        thinkingBubbleWindow = nil
-        openPopover()
+              let newProvider = AgentProvider(rawValue: raw) else { return }
+
+        let host = providerMenuHostWindow
+        providerMenuHostWindow = nil
+
+        if host === detachedChatWindow {
+            let current = detachedProvider ?? provider
+            guard newProvider != current else { return }
+            detachedProvider = newProvider
+            restartDetachedSessionForCurrentDetachedProvider()
+            return
+        }
+
+        if host === popoverWindow {
+            guard newProvider != provider else { return }
+            provider = newProvider
+            session?.terminate()
+            session = nil
+            popoverWindow?.orderOut(nil)
+            popoverWindow = nil
+            terminalView = nil
+            thinkingBubbleWindow?.orderOut(nil)
+            thinkingBubbleWindow = nil
+            openPopover()
+            return
+        }
     }
 
-    @objc func copyLastResponseFromButton() {
-        terminalView?.handleSlashCommandPublic("/copy")
+    /// New detached provider: new backend session; dock `provider` and UserDefaults unchanged.
+    private func restartDetachedSessionForCurrentDetachedProvider() {
+        guard detachedChatWindow != nil, let term = detachedTerminalView else { return }
+        let p = detachedProvider ?? provider
+        detachedSession?.terminate()
+        detachedSession = nil
+        currentStreamingText = ""
+        term.provider = p
+        term.resetState()
+        term.showSessionMessage()
+        let newSession = p.createSession()
+        detachedSession = newSession
+        wireSession(newSession, terminal: term)
+        term.onSendMessage = { [weak self] message in
+            self?.detachedSession?.send(message: message)
+        }
+        term.onClearRequested = { [weak self] in
+            self?.resetSession(for: .detachedWindow)
+        }
+        newSession.start()
+        updateDetachedTitleBarProviderLabels()
     }
 
-    @objc func refreshSessionFromButton() {
+    private func updateDetachedTitleBarProviderLabels() {
+        guard let cv = detachedChatWindow?.contentView else { return }
+        let t = resolvedTheme
+        let p = detachedProvider ?? provider
+        detachedChatWindow?.title = "\(name) — \(p.displayName)"
+        guard let titleBar = cv.subviews.first(where: { abs($0.frame.height - 28) < 0.5 && abs($0.frame.maxY - cv.bounds.height) < 2 }) else { return }
+
+        var titleField: NSTextField?
+        var providerArrow: NSButton?
+        for sub in titleBar.subviews {
+            if titleField == nil, let tf = sub as? NSTextField { titleField = tf }
+            if providerArrow == nil, let b = sub as? NSButton, b.tag == Self.detachedProviderArrowButtonTag { providerArrow = b }
+        }
+        guard let tf = titleField else { return }
+        tf.stringValue = t.titleString(for: p)
+        tf.sizeToFit()
+        tf.frame.origin = NSPoint(x: Self.detachedTitleLeadingInset, y: 6)
+        if let arrow = providerArrow {
+            var af = arrow.frame
+            af.origin.x = tf.frame.maxX + 2
+            arrow.frame = af
+        }
+        if let click = titleBar.subviews.first(where: { ($0 as? NSButton)?.tag == Self.detachedProviderClickAreaTag }) as? NSButton {
+            let endX = (providerArrow?.frame.maxX ?? tf.frame.maxX) + 4
+            let clickW = max(endX - Self.detachedTitleLeadingInset, 48)
+            click.frame = NSRect(x: Self.detachedTitleLeadingInset, y: 0, width: clickW, height: 28)
+        }
+    }
+
+    @objc func copyLastResponseFromButton(_ sender: Any?) {
+        let term: TerminalView?
+        if let view = sender as? NSView, view.window === detachedChatWindow {
+            term = detachedTerminalView
+        } else {
+            term = terminalView
+        }
+        term?.handleSlashCommandPublic("/copy")
+    }
+
+    @objc func refreshSessionFromButton(_ sender: Any?) {
         guard !isOnboarding else { return }
-        resetSession()
+        if let view = sender as? NSView, view.window === detachedChatWindow {
+            resetSession(for: .detachedWindow)
+        } else {
+            resetSession(for: .dockPopover)
+        }
     }
 
     private func formatToolInput(_ input: [String: Any]) -> String {
@@ -617,7 +1286,9 @@ class WalkerCharacter {
         let charFrame = window.frame
         let popoverSize = popover.frame.size
         var x = charFrame.midX - popoverSize.width / 2
-        let y = charFrame.maxY - 15
+        // Half character height pulls the panel toward the sprite; ~4 cm (~113 pt) extra lift keeps it off the terminal.
+        let fourCmInPoints: CGFloat = 72.0 * 4.0 / 2.54
+        let y = charFrame.maxY - 15 - displayHeight * 0.5 + fourCmInPoints
 
         let screenFrame = screen.frame
         x = max(screenFrame.minX + 4, min(x, screenFrame.maxX - popoverSize.width - 4))
@@ -651,6 +1322,12 @@ class WalkerCharacter {
     var showingCompletion = false
 
     private static let bubbleH: CGFloat = 26
+    /// Bubble window bottom sits at this fraction of character height from the dock baseline (lower = closer to head).
+    private static let bubbleAnchorFromCharacterBottom: CGFloat = 0.58
+    /// Popped-out window: keep the provider title row to the right of the traffic-light buttons.
+    private static let detachedTitleLeadingInset: CGFloat = 90
+    private static let detachedProviderArrowButtonTag = 901
+    private static let detachedProviderClickAreaTag = 902
     private var phraseAnimating = false
 
     func updateThinkingBubble() {
@@ -729,7 +1406,7 @@ class WalkerCharacter {
 
         let charFrame = window.frame
         let x = charFrame.midX - bubbleW / 2
-        let y = charFrame.origin.y + charFrame.height * 0.88
+        let y = charFrame.origin.y + charFrame.height * Self.bubbleAnchorFromCharacterBottom
         thinkingBubbleWindow?.setFrame(CGRect(x: x, y: y, width: bubbleW, height: h), display: false)
 
         let borderColor = isCompletion ? t.bubbleCompletionBorder.cgColor : t.bubbleBorder.cgColor
@@ -848,6 +1525,43 @@ class WalkerCharacter {
 
     // MARK: - Walking
 
+    /// Other dock characters whose positions we use to avoid landing stacked (no teleporting — only the planned walk endpoint moves).
+    private func peerCharactersForSeparation() -> [WalkerCharacter] {
+        guard let all = controller?.characters else { return [] }
+        return all.filter { other in
+            other !== self && other.window.isVisible && other.isManuallyVisible && !other.isIdleForPopover
+        }
+    }
+
+    private var minWalkSeparationPixels: CGFloat {
+        max(displayWidth * 0.35, 72)
+    }
+
+    /// Nudges `end` along the same direction as `start → end` so the stop stays at least `minWalkSeparationPixels` from each peer’s current progress.
+    private func applyPeerWalkEndSeparation(start: CGFloat, end: CGFloat) -> CGFloat {
+        let peers = peerCharactersForSeparation()
+        guard !peers.isEmpty, currentTravelDistance > 1 else { return end }
+        let minProg = minWalkSeparationPixels / currentTravelDistance
+        var e = end
+        for _ in 0..<6 {
+            var changed = false
+            for peer in peers {
+                let p = peer.positionProgress
+                guard abs(e - p) < minProg else { continue }
+                if e >= start {
+                    let n = max(e, p + minProg)
+                    if n != e { e = n; changed = true }
+                } else {
+                    let n = min(e, p - minProg)
+                    if n != e { e = n; changed = true }
+                }
+            }
+            e = min(max(e, 0), 1)
+            if !changed { break }
+        }
+        return e
+    }
+
     func startWalk() {
         isPaused = false
         isWalking = true
@@ -860,6 +1574,17 @@ class WalkerCharacter {
             goingRight = true
         } else {
             goingRight = Bool.random()
+            let peers = peerCharactersForSeparation()
+            if currentTravelDistance > 1,
+               let nearest = peers.min(by: {
+                   abs($0.positionProgress - positionProgress) < abs($1.positionProgress - positionProgress)
+               }) {
+                let sep = abs(nearest.positionProgress - positionProgress) * currentTravelDistance
+                if sep < minWalkSeparationPixels {
+                    // Peer is to the left on the dock → go right (increase progress), and vice versa.
+                    goingRight = nearest.positionProgress < positionProgress
+                }
+            }
         }
 
         walkStartPos = positionProgress
@@ -867,40 +1592,53 @@ class WalkerCharacter {
         let referenceWidth: CGFloat = 500.0
         let walkPixels = CGFloat.random(in: walkAmountRange) * referenceWidth
         let walkAmount = currentTravelDistance > 0 ? walkPixels / currentTravelDistance : 0.3
+        let tentativeEnd: CGFloat
         if goingRight {
-            walkEndPos = min(walkStartPos + walkAmount, 1.0)
+            tentativeEnd = min(walkStartPos + walkAmount, 1.0)
         } else {
-            walkEndPos = max(walkStartPos - walkAmount, 0.0)
+            tentativeEnd = max(walkStartPos - walkAmount, 0.0)
         }
+        walkEndPos = applyPeerWalkEndSeparation(start: walkStartPos, end: tentativeEnd)
+
+        // If separation pinned us to essentially no move, try the other direction with the same stride length.
+        let minStrideProg = 8 / max(currentTravelDistance, 1)
+        if abs(walkEndPos - walkStartPos) < minStrideProg {
+            goingRight.toggle()
+            let altEnd: CGFloat
+            if goingRight {
+                altEnd = min(walkStartPos + walkAmount, 1.0)
+            } else {
+                altEnd = max(walkStartPos - walkAmount, 0.0)
+            }
+            walkEndPos = applyPeerWalkEndSeparation(start: walkStartPos, end: altEnd)
+        }
+
         // Store pixel positions so walk speed stays consistent if screen changes mid-walk
         walkStartPixel = walkStartPos * currentTravelDistance
         walkEndPixel = walkEndPos * currentTravelDistance
 
-        let minSeparation: CGFloat = 0.12
-        if let siblings = controller?.characters {
-            for sibling in siblings where sibling !== self {
-                let sibPos = sibling.positionProgress
-                if abs(walkEndPos - sibPos) < minSeparation {
-                    if goingRight {
-                        walkEndPos = max(walkStartPos, sibPos - minSeparation)
-                    } else {
-                        walkEndPos = min(walkStartPos, sibPos + minSeparation)
-                    }
-                }
-            }
-        }
-
         updateFlip()
+        useWalkClipMoveRange = walkLoopVideoName != nil
+        let walkClip = walkLoopVideoName ?? videoName
+        playLoop(videoName: walkClip)
         queuePlayer.seek(to: .zero)
         queuePlayer.play()
+        refreshPlaybackRateAfterClipChange()
     }
 
     func enterPause() {
         isWalking = false
         isPaused = true
-        queuePlayer.pause()
-        queuePlayer.seek(to: .zero)
-        let delay = Double.random(in: 5.0...12.0)
+        useWalkClipMoveRange = false
+        if let idle = idleLoopVideoName {
+            playLoop(videoName: idle)
+            queuePlayer.play()
+        } else {
+            queuePlayer.pause()
+            queuePlayer.seek(to: .zero)
+        }
+        refreshPlaybackRateAfterClipChange()
+        let delay = Double.random(in: 40.0...85.0)
         pauseEndTime = CACurrentMediaTime() + delay
     }
 
@@ -945,10 +1683,62 @@ class WalkerCharacter {
         }
     }
 
+    /// Maps current clip time to walk progress [0, 1], optionally constraining movement to a subrange.
+    private func walkProgress(forVideoTime videoTime: CFTimeInterval) -> CGFloat {
+        let range: ClosedRange<CFTimeInterval>?
+        if useWalkClipMoveRange {
+            range = walkHorizontalMoveVideoRange ?? fallbackWalkLinearRange()
+        } else {
+            range = horizontalMoveVideoRange
+        }
+        guard let range = range else {
+            return movementPosition(at: videoTime)
+        }
+        if videoTime <= range.lowerBound {
+            return 0.0
+        }
+        if videoTime >= range.upperBound {
+            return 1.0
+        }
+        let span = range.upperBound - range.lowerBound
+        guard span > 1e-6 else { return movementPosition(at: videoTime) }
+        let u = (videoTime - range.lowerBound) / span
+        // Linear here keeps dock travel tightly locked to visible stepping frames.
+        return CGFloat(u)
+    }
+
+    /// Uses AVPlayer's current timeline position so dock movement stays synchronized to rendered frames.
+    private func syncedVideoTime(fallbackElapsed elapsed: CFTimeInterval) -> CFTimeInterval {
+        let t = queuePlayer.currentTime().seconds
+        let dur = activeLoopDuration
+        guard t.isFinite, t >= 0 else { return min(elapsed, dur) }
+        let mod = t.truncatingRemainder(dividingBy: dur)
+        return mod >= 0 ? mod : (mod + dur)
+    }
+
+    /// Wall-clock length of one playthrough of the current clip at `queuePlayer.rate` (avoids ending walks early when rate < 1).
+    private var wallDurationForCurrentClip: CFTimeInterval {
+        let r = Double(max(queuePlayer.rate, 0.05))
+        return activeLoopDuration / r
+    }
+
+    /// Prefer sample-accurate `currentTime` before the looper wraps; then scale wall elapsed by rate.
+    private func walkPhaseMediaTime(elapsed: CFTimeInterval) -> CFTimeInterval {
+        let dur = activeLoopDuration
+        let t = queuePlayer.currentTime().seconds
+        if t.isFinite, t >= 0, t < dur + 0.2 {
+            return min(max(t, 0), dur)
+        }
+        let scaled = elapsed * Double(max(queuePlayer.rate, 0.05))
+        return min(max(scaled, 0), dur)
+    }
+
     // MARK: - Frame Update
 
     func update(dockX: CGFloat, dockWidth: CGFloat, dockTopY: CGFloat) {
         currentTravelDistance = max(dockWidth - displayWidth, 0)
+        let now = CACurrentMediaTime()
+
         if isIdleForPopover {
             let travelDistance = currentTravelDistance
             let x = dockX + travelDistance * positionProgress + currentFlipCompensation
@@ -960,12 +1750,11 @@ class WalkerCharacter {
             return
         }
 
-        let now = CACurrentMediaTime()
-
         if isPaused {
             if now >= pauseEndTime {
                 startWalk()
             } else {
+                playAmbientWaveOneShotIfDue(now: now)
                 let travelDistance = max(dockWidth - displayWidth, 0)
                 let x = dockX + travelDistance * positionProgress + currentFlipCompensation
                 let bottomPadding = displayHeight * 0.15
@@ -977,11 +1766,12 @@ class WalkerCharacter {
 
         if isWalking {
             let elapsed = now - walkStartTime
-            let videoTime = min(elapsed, videoDuration)
+            let videoTime = walkPhaseMediaTime(elapsed: elapsed)
             let travelDistance = currentTravelDistance
+            let walkWall = wallDurationForCurrentClip
 
             // Interpolate in pixel space for consistent speed across screen changes
-            let walkNorm = elapsed >= videoDuration ? 1.0 : movementPosition(at: videoTime)
+            let walkNorm = elapsed >= walkWall ? 1.0 : walkProgress(forVideoTime: videoTime)
             let currentPixel = walkStartPixel + (walkEndPixel - walkStartPixel) * walkNorm
 
             // Convert pixel position back to progress for the current screen
@@ -989,7 +1779,7 @@ class WalkerCharacter {
                 positionProgress = min(max(currentPixel / travelDistance, 0), 1)
             }
 
-            if elapsed >= videoDuration {
+            if elapsed >= walkWall - 0.02 {
                 walkEndPos = positionProgress
                 enterPause()
                 return

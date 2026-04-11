@@ -10,6 +10,15 @@
 		A10000010000000000000001 /* LilAgentsApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000001 /* LilAgentsApp.swift */; };
 		A10000010000000000000002 /* walk-bruce-01.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000002 /* walk-bruce-01.mov */; };
 		A10000010000000000000003 /* walk-jazz-01.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000005 /* walk-jazz-01.mov */; };
+		A10000010000000000000038 /* red-combined-10s-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000038 /* red-combined-10s-hevc-alpha.mov */; };
+		A10000010000000000000039 /* blue-combined-10s-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000039 /* blue-combined-10s-hevc-alpha.mov */; };
+		A10000010000000000000040 /* victory-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000040 /* victory-hevc-alpha.mov */; };
+		A10000010000000000000041 /* red-idle-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000041 /* red-idle-hevc-alpha.mov */; };
+		A10000010000000000000042 /* blue-idle-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000042 /* blue-idle-hevc-alpha.mov */; };
+		A10000010000000000000043 /* red-walk-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000043 /* red-walk-hevc-alpha.mov */; };
+		A10000010000000000000044 /* blue-walk-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000044 /* blue-walk-hevc-alpha.mov */; };
+		A10000010000000000000045 /* red-popover-wave-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000045 /* red-popover-wave-hevc-alpha.mov */; };
+		A10000010000000000000046 /* blue-popover-wave-hevc-alpha.mov in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000046 /* blue-popover-wave-hevc-alpha.mov */; };
 		A10000010000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000007 /* Assets.xcassets */; };
 		A10000010000000000000010 /* Sounds in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000010 /* Sounds */; };
 		A10000010000000000000020 /* PopoverTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000020 /* PopoverTheme.swift */; };
@@ -35,6 +44,15 @@
 		A10000020000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000020000000000000004 /* LilAgents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LilAgents.entitlements; sourceTree = "<group>"; };
 		A10000020000000000000005 /* walk-jazz-01.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "walk-jazz-01.mov"; sourceTree = "<group>"; };
+		A10000020000000000000038 /* red-combined-10s-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "red-combined-10s-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000039 /* blue-combined-10s-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "blue-combined-10s-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000040 /* victory-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "victory-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000041 /* red-idle-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "red-idle-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000042 /* blue-idle-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "blue-idle-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000043 /* red-walk-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "red-walk-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000044 /* blue-walk-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "blue-walk-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000045 /* red-popover-wave-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "red-popover-wave-hevc-alpha.mov"; sourceTree = "<group>"; };
+		A10000020000000000000046 /* blue-popover-wave-hevc-alpha.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "blue-popover-wave-hevc-alpha.mov"; sourceTree = "<group>"; };
 		A10000020000000000000007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000020000000000000010 /* Sounds */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Sounds; sourceTree = "<group>"; };
 		A10000020000000000000020 /* PopoverTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverTheme.swift; sourceTree = "<group>"; };
@@ -94,6 +112,15 @@
 				A10000020000000000000025 /* LilAgentsController.swift */,
 				A10000020000000000000002 /* walk-bruce-01.mov */,
 				A10000020000000000000005 /* walk-jazz-01.mov */,
+				A10000020000000000000038 /* red-combined-10s-hevc-alpha.mov */,
+				A10000020000000000000039 /* blue-combined-10s-hevc-alpha.mov */,
+				A10000020000000000000040 /* victory-hevc-alpha.mov */,
+				A10000020000000000000041 /* red-idle-hevc-alpha.mov */,
+				A10000020000000000000042 /* blue-idle-hevc-alpha.mov */,
+				A10000020000000000000043 /* red-walk-hevc-alpha.mov */,
+				A10000020000000000000044 /* blue-walk-hevc-alpha.mov */,
+				A10000020000000000000045 /* red-popover-wave-hevc-alpha.mov */,
+				A10000020000000000000046 /* blue-popover-wave-hevc-alpha.mov */,
 				A10000020000000000000007 /* Assets.xcassets */,
 				A10000020000000000000010 /* Sounds */,
 				A10000020000000000000003 /* Info.plist */,
@@ -176,6 +203,15 @@
 			files = (
 				A10000010000000000000002 /* walk-bruce-01.mov in Resources */,
 				A10000010000000000000003 /* walk-jazz-01.mov in Resources */,
+				A10000010000000000000038 /* red-combined-10s-hevc-alpha.mov in Resources */,
+				A10000010000000000000039 /* blue-combined-10s-hevc-alpha.mov in Resources */,
+				A10000010000000000000040 /* victory-hevc-alpha.mov in Resources */,
+				A10000010000000000000041 /* red-idle-hevc-alpha.mov in Resources */,
+				A10000010000000000000042 /* blue-idle-hevc-alpha.mov in Resources */,
+				A10000010000000000000043 /* red-walk-hevc-alpha.mov in Resources */,
+				A10000010000000000000044 /* blue-walk-hevc-alpha.mov in Resources */,
+				A10000010000000000000045 /* red-popover-wave-hevc-alpha.mov in Resources */,
+				A10000010000000000000046 /* blue-popover-wave-hevc-alpha.mov in Resources */,
 				A10000010000000000000005 /* Assets.xcassets in Resources */,
 				A10000010000000000000010 /* Sounds in Resources */,
 			);
