@@ -1,55 +1,45 @@
-# lil agents · Merit & Muse fork
+<p align="center">
+  <b>lil agents — merit & muse</b><br>
+  <sub>a fork. tiny ai friends on your mac dock.</sub>
+</p>
 
-Personal fork of **[lil agents](https://github.com/ryanstephen/lil-agents)** — tiny AI companions on the macOS dock. This repo is **built on top of that project**; upstream owns the core app idea, architecture, and baseline features.
+---
 
-**Upstream repository:** [github.com/ryanstephen/lil-agents](https://github.com/ryanstephen/lil-agents)  
-**This fork:** custom characters (**Merit** & **Muse**), animation assets, UI experiments. Day-to-day work lives on **`main`** (the default branch here). The original project’s release line is tracked separately as **`upstream-main`** (see below).
+built on **[lil agents](https://github.com/ryanstephen/lil-agents)** · upstream app & idea · **[lilagents.xyz](https://lilagents.xyz)**
 
-Official downloads and product site for the original app: [lilagents.xyz](https://lilagents.xyz).
+this repo is my branch: **main** = day-to-day fork work · **upstream-main** = line kept near upstream for merges
 
-## Demo
+### what’s different here
 
-_Add a link or embed for your demo video here._
+- **merit & muse** — our two characters, copy, and onboarding voice (instead of the original pair).
+- **animation** — custom **hevc + alpha** loops (idle, walk, popover wave, combined hero clips, victory one-shot), plus timing json alongside the pipeline we used.
+- **popover & chat** — multi **pop-out** windows per character (so you can detach more than one chat). that work is also **contributed back** to upstream; this fork keeps it merged with our other tweaks.
+- **extra polish** — completion sounds & little celebration clips, thinking bubbles, menu bar flavor, themes — small cute layers on top of the base app.
 
-## Process
+### demo & process
 
-_Notes on how you created the animation, iteration workflow, tools, etc._
+_add your video link or embed._
 
-## Git remotes & workflow
+_notes on how you built the animation / sprites / export — your space._
 
-| Remote | Points to |
-| ---------- | --------- |
-| `origin`   | **Your fork** (this GitHub repo — push your branches here). |
-| `upstream` | **Original repo** — [ryanstephen/lil-agents](https://github.com/ryanstephen/lil-agents). |
+### media in git
 
-If `upstream` is not set yet:
+yes — the **`.mov` assets** this build uses live under `LilAgents/` and are **tracked on `main`** (clone and you get them). if you keep huge raw exports elsewhere, only what’s referenced in the xcode project needs to be in the repo.
+
+### sync with upstream
+
+`origin` → this fork · `upstream` → [ryanstephen/lil-agents](https://github.com/ryanstephen/lil-agents)
 
 ```bash
-git remote add upstream https://github.com/ryanstephen/lil-agents.git
 git fetch upstream
+git checkout upstream-main && git merge upstream/main && git push origin upstream-main
+git checkout main && git merge upstream-main   # when you want their updates here
 ```
 
-**Branches on this fork**
+### build
 
-| Branch | Role |
-| ------ | ---- |
-| `main` | **Your** primary line — Merit & Muse, merges, experiments. This is the GitHub **default** branch. |
-| `upstream-main` | Stays aligned with **upstream’s** `main` for easy diffs and merges. Not your day-to-day branch. |
+open `lil-agents.xcodeproj` in xcode and run the **LilAgents** scheme. cli setup & privacy: [upstream readme](https://github.com/ryanstephen/lil-agents/blob/main/README.md).
 
-**Keeping up with upstream**
+### license
 
-1. `git fetch upstream`
-2. Check out `upstream-main` and merge (or rebase) **`upstream/main`** into it, then push to `origin`.
-3. Merge **`upstream-main`** into **`main`** when you want those upstream changes in your fork, and fix conflicts on `main`.
-
-Optional feature branches (`pr/...`) work the same as before; open PRs against **`main`** on your fork.
-
-## Building
-
-Open `lil-agents.xcodeproj` in Xcode and run the **LilAgents** scheme.
-
-Requirements and provider CLIs match upstream; see the [upstream README](https://github.com/ryanstephen/lil-agents/blob/main/README.md) for CLI install links and privacy notes.
-
-## License
-
-MIT — see [LICENSE](LICENSE) (same license family as upstream; refer to upstream for their exact terms).
+mit — see [license](LICENSE).
