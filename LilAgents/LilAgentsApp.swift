@@ -26,7 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         controller?.characters.forEach {
             $0.session?.terminate()
-            $0.detachedSession?.terminate()
+            $0.terminateAllDetachedSessions()
         }
     }
 
@@ -40,11 +40,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
-        let char1Item = NSMenuItem(title: "Merit", action: #selector(toggleChar1), keyEquivalent: "1")
+        let char1Item = NSMenuItem(title: "Bruce", action: #selector(toggleChar1), keyEquivalent: "1")
         char1Item.state = .on
         menu.addItem(char1Item)
 
-        let char2Item = NSMenuItem(title: "Muse", action: #selector(toggleChar2), keyEquivalent: "2")
+        let char2Item = NSMenuItem(title: "Jazz", action: #selector(toggleChar2), keyEquivalent: "2")
         char2Item.state = .on
         menu.addItem(char2Item)
 
@@ -147,10 +147,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         controller?.characters.forEach { char in
-            if char.detachedChatWindow != nil {
+            if char.hasDetachedChats {
                 char.refreshDetachedChromeTheme()
-                char.detachedTerminalView?.reapplyAppearanceFromTheme()
-                return
+                char.reapplyAppearanceToAllDetachedTerminals()
             }
             let wasOpen = char.isIdleForPopover
             if wasOpen { char.popoverWindow?.orderOut(nil) }
@@ -164,6 +163,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     char.terminalView?.replayHistory(session.history)
                 }
                 char.updatePopoverPosition()
+                char.ensurePopoverAboveCharacterWindow()
                 char.popoverWindow?.orderFrontRegardless()
                 char.popoverWindow?.makeKey()
                 if let terminal = char.terminalView {
