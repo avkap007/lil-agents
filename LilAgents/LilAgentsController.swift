@@ -47,8 +47,9 @@ class LilAgentsController {
         char2.walkHorizontalMoveVideoRange = 0.12...3.92
         char1.horizontalMoveVideoRange = 3.22...7.30
         char2.horizontalMoveVideoRange = 3.22...7.30
-        char1.idlePlaybackRate = 0.88
-        char2.idlePlaybackRate = 0.88
+        // Slower idle + dock-only micro-holds (see `idleStillHoldSecondsRange` on `WalkerCharacter`).
+        char1.idlePlaybackRate = 0.68
+        char2.idlePlaybackRate = 0.68
         char1.walkPlaybackRate = 0.88
         char2.walkPlaybackRate = 0.88
         char1.popoverWavePlaybackRate = 0.9
