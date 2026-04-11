@@ -506,7 +506,7 @@ class WalkerCharacter {
         popOutBtn.isBordered = false
         popOutBtn.contentTintColor = t.titleText.withAlphaComponent(0.75)
         popOutBtn.target = self
-        popOutBtn.action = #selector(popOutChatToDetachedWindow)
+        popOutBtn.action = #selector(popOutChatToDetachedWindow(_:))
         titleBar.addSubview(popOutBtn)
 
         let refreshBtn = NSButton(frame: NSRect(x: popoverWidth - 48, y: 5, width: 16, height: 16))
@@ -660,9 +660,18 @@ class WalkerCharacter {
         session.onSessionReady = { }
     }
 
-    @objc func popOutChatToDetachedWindow() {
+    @objc func popOutChatToDetachedWindow(_ sender: Any?) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.popOutChatToDetachedWindow(sender)
+            }
+            return
+        }
+        guard let pw = popoverWindow,
+              let senderView = sender as? NSView,
+              senderView.window === pw else { return }
         guard !isOnboarding, detachedChatWindow == nil else { return }
-        guard let sess = session, let term = terminalView, popoverWindow != nil else { return }
+        guard let sess = session, let term = terminalView else { return }
 
         removeEventMonitors()
         term.removeFromSuperview()
