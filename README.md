@@ -22,10 +22,6 @@ _add your video link or embed._
 
 _notes on how you built the animation / sprites / export — your space._
 
-### media in git
-
-yes — the **`.mov` assets** this build uses live under `LilAgents/` and are **tracked on `main`** (clone and you get them). if you keep huge raw exports elsewhere, only what’s referenced in the xcode project needs to be in the repo.
-
 ### sync with upstream
 
 `origin` → this fork · `upstream` → [ryanstephen/lil-agents](https://github.com/ryanstephen/lil-agents)
