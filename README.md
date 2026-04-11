@@ -3,7 +3,7 @@
 Personal fork of **[lil agents](https://github.com/ryanstephen/lil-agents)** — tiny AI companions on the macOS dock. This repo is **built on top of that project**; upstream owns the core app idea, architecture, and baseline features.
 
 **Upstream repository:** [github.com/ryanstephen/lil-agents](https://github.com/ryanstephen/lil-agents)  
-**This fork:** custom characters (**Merit** & **Muse**), animation assets, UI experiments, and ongoing work on branches like `fork/wip-all-changes`.
+**This fork:** custom characters (**Merit** & **Muse**), animation assets, UI experiments. Day-to-day work lives on **`main`** (the default branch here). The original project’s release line is tracked separately as **`upstream-main`** (see below).
 
 Official downloads and product site for the original app: [lilagents.xyz](https://lilagents.xyz).
 
@@ -29,13 +29,20 @@ git remote add upstream https://github.com/ryanstephen/lil-agents.git
 git fetch upstream
 ```
 
+**Branches on this fork**
+
+| Branch | Role |
+| ------ | ---- |
+| `main` | **Your** primary line — Merit & Muse, merges, experiments. This is the GitHub **default** branch. |
+| `upstream-main` | Stays aligned with **upstream’s** `main` for easy diffs and merges. Not your day-to-day branch. |
+
 **Keeping up with upstream**
 
 1. `git fetch upstream`
-2. Merge or rebase `upstream/main` into a **tracking branch** you keep close to upstream (e.g. local `main`).
-3. When you want those changes in your experimental branch, merge (or rebase) that into `fork/wip-all-changes` **when you’re ready**, and resolve conflicts there.
+2. Check out `upstream-main` and merge (or rebase) **`upstream/main`** into it, then push to `origin`.
+3. Merge **`upstream-main`** into **`main`** when you want those upstream changes in your fork, and fix conflicts on `main`.
 
-That way `main` (or whatever you use as “clean upstream + minimal fork fixes”) stays easy to compare to `upstream/main`, and WIP stays a sandbox.
+Optional feature branches (`pr/...`) work the same as before; open PRs against **`main`** on your fork.
 
 ## Building
 
