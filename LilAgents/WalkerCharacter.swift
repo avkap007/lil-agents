@@ -107,6 +107,7 @@ class WalkerCharacter {
     private var wasDetachedVisibleBeforeEnvironmentHide = false
     private var wasBubbleVisibleBeforeEnvironmentHide = false
     private var detachedWindowCloseObserver: NSObjectProtocol?
+    private var detachedBecameKeyObserver: NSObjectProtocol?
     private var popoverBecameKeyObserver: NSObjectProtocol?
     private weak var providerMenuHostWindow: NSWindow?
 
@@ -193,6 +194,7 @@ class WalkerCharacter {
         if let o = detachedWindowCloseObserver {
             NotificationCenter.default.removeObserver(o)
         }
+        removeDetachedBecameKeyObserver()
         removePopoverBecameKeyObserver()
     }
 
@@ -607,6 +609,7 @@ class WalkerCharacter {
             NotificationCenter.default.removeObserver(o)
             detachedWindowCloseObserver = nil
         }
+        removeDetachedBecameKeyObserver()
         let sess = detachedSession
         let win = detachedChatWindow
         detachedSession = nil
@@ -877,7 +880,23 @@ class WalkerCharacter {
             self.completeDetachedChatTeardownAfterWindowClosed()
         }
 
+        detachedBecameKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: win,
+            queue: .main
+        ) { [weak self, weak win] _ in
+            guard let self = self, let w = win, self.detachedChatWindow === w else { return }
+            w.orderFrontRegardless()
+        }
+
         detachedChatWindow = win
+    }
+
+    private func removeDetachedBecameKeyObserver() {
+        if let o = detachedBecameKeyObserver {
+            NotificationCenter.default.removeObserver(o)
+            detachedBecameKeyObserver = nil
+        }
     }
 
     private func completeDetachedChatTeardownAfterWindowClosed() {
@@ -885,6 +904,7 @@ class WalkerCharacter {
             NotificationCenter.default.removeObserver(o)
             detachedWindowCloseObserver = nil
         }
+        removeDetachedBecameKeyObserver()
         let sess = detachedSession
         detachedSession = nil
         detachedTerminalView = nil
