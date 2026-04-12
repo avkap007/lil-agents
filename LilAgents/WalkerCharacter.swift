@@ -79,7 +79,7 @@ class WalkerCharacter {
     private(set) var displayHeight: CGFloat = 200
     var displayWidth: CGFloat { displayHeight * (videoWidth / videoHeight) }
 
-    /// Scales the dock window vs the menu “character size” (Bruce ≈ 1.0; Red needs >1 to match on-screen scale).
+    /// Scales the dock window vs the menu "character size" (baseline ~1.0; larger sprites need >1).
     var displayScale: CGFloat = 1.0 {
         didSet {
             displayHeight = size.height * displayScale
@@ -102,10 +102,10 @@ class WalkerCharacter {
     var idleLoopVideoName: String? = nil
     /// Looped idle plays slower for calmer standing motion (`AVPlayer.rate`).
     var idlePlaybackRate: Float = 0.68
-    /// While on the dock (not in the popover), freeze the idle loop briefly now and then — reads as “standing still” beats. Set upper bound below `0.15` to disable.
-    var idleStillHoldSecondsRange: ClosedRange<Double> = 1.2...2.6
-    /// After loading the idle loop or finishing a hold, wait at least this long before another hold may start.
-    var idleMotionMinBeforeHoldSeconds: CFTimeInterval = 3.8
+    /// At the dock only: play this many full idle cycles (at `idlePlaybackRate`) before a long still.
+    var idleMotionBurstLoopCount: Int = 2
+    /// After the burst, pause on the current frame for this long (seconds). Upper bound under ~45 keeps motion looping with no long still.
+    var idleLongStillSecondsRange: ClosedRange<Double> = 300...600
     /// Walk clip: small slowdown; spacing is mostly from longer pauses, not extreme rate.
     var walkPlaybackRate: Float = 0.88
     /// Wave clip: played once when opening the dock popover and occasionally as an ambient one-shot at the dock.
@@ -130,10 +130,9 @@ class WalkerCharacter {
     private var useWalkClipMoveRange = false
     /// Next time an ambient “desk” wave may fire (wall clock).
     private var nextAmbientWaveTime: CFTimeInterval = 0
-    /// Dock-only: frozen idle pose during micro-hold.
-    private var idleMicroHoldActive = false
-    private var idleMicroHoldEndsAt: CFTimeInterval = 0
-    private var idleMicroHoldNextEval: CFTimeInterval = 0
+    /// Dock-only idle rhythm: motion burst vs long still (not used while popover open).
+    private var dockIdleRhythmInStill = false
+    private var dockIdleRhythmPhaseEndsAt: CFTimeInterval = 0
 
     // Walk timing (per-character, from frame analysis; combined clip is ~10s)
     /// Duration of the clip currently loaded into the looper (combined ~10s, idle loop ~2.08s).
@@ -276,7 +275,7 @@ class WalkerCharacter {
         }
         refreshPlaybackRateAfterClipChange()
         scheduleNextAmbientWave()
-        resetIdleMicroHoldScheduleAfterMotionPhase()
+        armDockIdleMotionBurstFromCurrentPlayback()
     }
 
     deinit {
@@ -334,22 +333,47 @@ class WalkerCharacter {
         nextAmbientWaveTime = CACurrentMediaTime() + ambientWaveIntervalSeconds + jitter
     }
 
-    private func resetIdleMicroHoldScheduleAfterMotionPhase() {
-        idleMicroHoldActive = false
-        let now = CACurrentMediaTime()
-        idleMicroHoldNextEval = now + idleMotionMinBeforeHoldSeconds + Double.random(in: 0...2.5)
+    private func dockIdleMotionBurstWallDuration() -> CFTimeInterval {
+        let loops = max(idleMotionBurstLoopCount, 1)
+        let r = Double(max(idlePlaybackRate, 0.05))
+        return Double(loops) * activeLoopDuration / r
     }
 
-    private func cancelIdleMicroHoldResumingPlayback() {
-        guard idleMicroHoldActive else { return }
-        idleMicroHoldActive = false
-        guard idleLoopVideoName != nil, !isWalking, isPaused, !isPlayingOneShot else { return }
+    /// Start timing a motion burst without seeking (e.g. right after `playLoop` already playing idle).
+    private func armDockIdleMotionBurstFromCurrentPlayback(from now: CFTimeInterval = CACurrentMediaTime()) {
+        dockIdleRhythmInStill = false
+        dockIdleRhythmPhaseEndsAt = now + dockIdleMotionBurstWallDuration()
+    }
+
+    private func clearDockIdleRhythmState() {
+        dockIdleRhythmInStill = false
+        dockIdleRhythmPhaseEndsAt = 0
+    }
+
+    private func interruptDockIdleForOneShot() {
+        clearDockIdleRhythmState()
+    }
+
+    private func enterDockIdleLongStill(at now: CFTimeInterval) {
+        dockIdleRhythmInStill = true
+        let lo = idleLongStillSecondsRange.lowerBound
+        let hi = idleLongStillSecondsRange.upperBound
+        let span = max(hi - lo, 0)
+        let dur = lo + Double.random(in: 0...span)
+        dockIdleRhythmPhaseEndsAt = now + max(dur, 45)
+        queuePlayer.pause()
+    }
+
+    private func resumeDockIdleMotionBurst(at now: CFTimeInterval) {
+        dockIdleRhythmInStill = false
+        dockIdleRhythmPhaseEndsAt = now + dockIdleMotionBurstWallDuration()
+        queuePlayer.seek(to: .zero)
         queuePlayer.play()
         queuePlayer.rate = idlePlaybackRate
     }
 
-    /// Dock idle only: mix short frozen poses into the looping idle clip.
-    private func tickIdleMicroHold(now: CFTimeInterval) {
+    /// Dock idle: N slow loops, then a long freeze on the last frame; repeat. Off during popover / one-shots.
+    private func tickDockIdleRhythm(now: CFTimeInterval) {
         guard idleLoopVideoName != nil,
               isPaused,
               !isWalking,
@@ -357,34 +381,25 @@ class WalkerCharacter {
               !isPlayingOneShot,
               isManuallyVisible,
               environmentHiddenAt == nil
-        else {
-            if idleMicroHoldActive { cancelIdleMicroHoldResumingPlayback() }
+        else { return }
+
+        let longStillEnabled = idleLongStillSecondsRange.upperBound >= 45
+
+        if dockIdleRhythmPhaseEndsAt == 0 {
+            armDockIdleMotionBurstFromCurrentPlayback(from: now)
             return
         }
-        guard idleStillHoldSecondsRange.upperBound >= 0.15 else { return }
+        if now < dockIdleRhythmPhaseEndsAt { return }
 
-        if idleMicroHoldActive {
-            if now >= idleMicroHoldEndsAt {
-                idleMicroHoldActive = false
-                queuePlayer.play()
-                queuePlayer.rate = idlePlaybackRate
-                idleMicroHoldNextEval = now + idleMotionMinBeforeHoldSeconds + Double.random(in: 0...2.5)
+        if !dockIdleRhythmInStill {
+            if longStillEnabled {
+                enterDockIdleLongStill(at: now)
+            } else {
+                armDockIdleMotionBurstFromCurrentPlayback(from: now)
             }
-            return
+        } else {
+            resumeDockIdleMotionBurst(at: now)
         }
-
-        guard now >= idleMicroHoldNextEval else { return }
-
-        let lo = idleStillHoldSecondsRange.lowerBound
-        let hi = idleStillHoldSecondsRange.upperBound
-        let holdDur = lo + Double.random(in: 0...max(hi - lo, 0))
-        guard holdDur >= 0.12 else {
-            idleMicroHoldNextEval = now + 1.5
-            return
-        }
-        idleMicroHoldActive = true
-        idleMicroHoldEndsAt = now + holdDur
-        queuePlayer.pause()
     }
 
     private func fallbackWalkLinearRange() -> ClosedRange<CFTimeInterval> {
@@ -453,7 +468,7 @@ class WalkerCharacter {
             playLoop(videoName: idle)
             queuePlayer.play()
             refreshPlaybackRateAfterClipChange()
-            resetIdleMicroHoldScheduleAfterMotionPhase()
+            armDockIdleMotionBurstFromCurrentPlayback()
             return
         }
         let clip = walkLoopVideoName ?? videoName
@@ -505,7 +520,7 @@ class WalkerCharacter {
         guard let clip = popoverWaveLoopVideoName, !clip.isEmpty else { return }
         guard now >= nextAmbientWaveTime else { return }
         guard !isPlayingOneShot, !isWalking, !isIdleForPopover else { return }
-        cancelIdleMicroHoldResumingPlayback()
+        interruptDockIdleForOneShot()
         guard let url = Bundle.main.url(forResource: clip, withExtension: "mov") else { return }
 
         wasPlayingBeforeOneShot = queuePlayer.rate > 0
@@ -707,14 +722,14 @@ class WalkerCharacter {
         isPaused = true
         pauseEndTime = CACurrentMediaTime() + Double.random(in: 25.0...50.0)
         switchToIdleStandingAnimation()
+        armDockIdleMotionBurstFromCurrentPlayback()
         let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
         nextAmbientWaveTime = max(nextAmbientWaveTime, push)
         controller?.completeOnboarding()
     }
 
     func openPopover() {
-        idleMicroHoldActive = false
-        idleMicroHoldNextEval = 0
+        clearDockIdleRhythmState()
         // Close any other open popover
         if let siblings = controller?.characters {
             for sibling in siblings where sibling !== self && sibling.isIdleForPopover {
@@ -807,7 +822,7 @@ class WalkerCharacter {
         switchToIdleStandingAnimation()
         let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
         nextAmbientWaveTime = max(nextAmbientWaveTime, push)
-        resetIdleMicroHoldScheduleAfterMotionPhase()
+        armDockIdleMotionBurstFromCurrentPlayback()
     }
 
     private func removeEventMonitors() {
@@ -1166,7 +1181,7 @@ class WalkerCharacter {
         let delay = Double.random(in: 30.0...60.0)
         pauseEndTime = CACurrentMediaTime() + delay
         switchToIdleStandingAnimation()
-        resetIdleMicroHoldScheduleAfterMotionPhase()
+        armDockIdleMotionBurstFromCurrentPlayback()
         let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
         nextAmbientWaveTime = max(nextAmbientWaveTime, push)
 
@@ -1757,7 +1772,7 @@ class WalkerCharacter {
     }
 
     func startWalk() {
-        idleMicroHoldActive = false
+        clearDockIdleRhythmState()
         isPaused = false
         isWalking = true
         playCount = 0
@@ -1783,10 +1798,11 @@ class WalkerCharacter {
         }
 
         walkStartPos = positionProgress
-        // Walk a fixed pixel distance (~200-325px) regardless of screen width.
-        let referenceWidth: CGFloat = 500.0
-        let walkPixels = CGFloat.random(in: walkAmountRange) * referenceWidth
-        let walkAmount = currentTravelDistance > 0 ? walkPixels / currentTravelDistance : 0.3
+        // Stride scales with dock width so long bars get visibly longer walks (capped for clip sync).
+        let travel = max(currentTravelDistance, 1)
+        let strideScale = max(300, min(travel * 0.72, 1050))
+        let walkPixels = CGFloat.random(in: walkAmountRange) * strideScale
+        let walkAmount = min(walkPixels / travel, 0.88)
         let tentativeEnd: CGFloat
         if goingRight {
             tentativeEnd = min(walkStartPos + walkAmount, 1.0)
@@ -1833,7 +1849,7 @@ class WalkerCharacter {
             queuePlayer.seek(to: .zero)
         }
         refreshPlaybackRateAfterClipChange()
-        resetIdleMicroHoldScheduleAfterMotionPhase()
+        armDockIdleMotionBurstFromCurrentPlayback()
         let delay = Double.random(in: 40.0...85.0)
         pauseEndTime = CACurrentMediaTime() + delay
     }
@@ -1952,7 +1968,7 @@ class WalkerCharacter {
                 startWalk()
             } else {
                 playAmbientWaveOneShotIfDue(now: now)
-                tickIdleMicroHold(now: now)
+                tickDockIdleRhythm(now: now)
                 let travelDistance = max(dockWidth - displayWidth, 0)
                 let x = dockX + travelDistance * positionProgress + currentFlipCompensation
                 let bottomPadding = displayHeight * 0.15

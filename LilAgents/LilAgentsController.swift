@@ -47,9 +47,13 @@ class LilAgentsController {
         char2.walkHorizontalMoveVideoRange = 0.12...3.92
         char1.horizontalMoveVideoRange = 3.22...7.30
         char2.horizontalMoveVideoRange = 3.22...7.30
-        // Slower idle + dock-only micro-holds (see `idleStillHoldSecondsRange` on `WalkerCharacter`).
+        // Dock idle: a few slow loops, then a long still (see `idleMotionBurstLoopCount` / `idleLongStillSecondsRange`).
         char1.idlePlaybackRate = 0.68
         char2.idlePlaybackRate = 0.68
+        char1.idleMotionBurstLoopCount = 2
+        char2.idleMotionBurstLoopCount = 2
+        char1.idleLongStillSecondsRange = 300...660
+        char2.idleLongStillSecondsRange = 320...720
         char1.walkPlaybackRate = 0.88
         char2.walkPlaybackRate = 0.88
         char1.popoverWavePlaybackRate = 0.9
@@ -92,15 +96,15 @@ class LilAgentsController {
     }
 
     private func triggerOnboarding() {
-        guard let bruce = characters.first else { return }
-        bruce.isOnboarding = true
+        guard let merit = characters.first else { return }
+        merit.isOnboarding = true
         // Show "hi!" bubble after a short delay so the character is visible first
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            bruce.currentPhrase = "hi!"
-            bruce.showingCompletion = true
-            bruce.completionBubbleExpiry = CACurrentMediaTime() + 600 // stays until clicked
-            bruce.showBubble(text: "hi!", isCompletion: true)
-            bruce.playCompletionSound()
+            merit.currentPhrase = "hi!"
+            merit.showingCompletion = true
+            merit.completionBubbleExpiry = CACurrentMediaTime() + 600 // stays until clicked
+            merit.showBubble(text: "hi!", isCompletion: true)
+            merit.playCompletionSound()
         }
     }
 
