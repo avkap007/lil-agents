@@ -15,53 +15,54 @@ class CharacterContentView: NSView {
 
     override var isOpaque: Bool { false }
 
+    /// Portrait video has a lot of transparent canvas above the sprite. Only the lower
+    /// fraction of the view (near the Dock) should be eligible for hits — clicks “above”
+    /// the character must pass through to windows below.
+    private var interactiveRegionMaxY: CGFloat {
+        bounds.height * 0.50
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let localPoint = convert(point, from: superview)
         guard bounds.contains(localPoint) else { return nil }
 
+        // NSView origin is bottom-left: small Y = near Dock / feet, large Y = empty sky.
+        if localPoint.y > interactiveRegionMaxY {
+            return nil
+        }
+
         // AVPlayerLayer is GPU-rendered so layer.render(in:) won't capture video pixels.
         // Use CGWindowListCreateImage to sample actual on-screen alpha at click point.
         let screenPoint = window?.convertPoint(toScreen: convert(localPoint, to: nil)) ?? .zero
-        // Use the full virtual display height for the CG coordinate flip, not just
-        // the main screen. NSScreen coordinates have origin at bottom-left of the
-        // primary display, while CG uses top-left. The primary screen's height is
-        // the correct basis for the flip across all monitors.
         guard let primaryScreen = NSScreen.screens.first else { return nil }
         let flippedY = primaryScreen.frame.height - screenPoint.y
 
         let captureRect = CGRect(x: screenPoint.x - 0.5, y: flippedY - 0.5, width: 1, height: 1)
         guard let windowID = window?.windowNumber, windowID > 0 else { return nil }
 
-        // Fallback hit rect for when pixel sampling fails or video is paused
-        let insetX = bounds.width * 0.2
-        let insetY = bounds.height * 0.15
-        let hitRect = bounds.insetBy(dx: insetX, dy: insetY)
-
-        if let image = CGWindowListCreateImage(
+        guard let image = CGWindowListCreateImage(
             captureRect,
             .optionIncludingWindow,
             CGWindowID(windowID),
             [.boundsIgnoreFraming, .bestResolution]
-        ) {
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            var pixel: [UInt8] = [0, 0, 0, 0]
-            if let ctx = CGContext(
-                data: &pixel, width: 1, height: 1,
-                bitsPerComponent: 8, bytesPerRow: 4,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) {
-                ctx.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-                if pixel[3] > 30 {
-                    return self
-                }
-                // Pixel was transparent — use fallback rect if in center area
-                return hitRect.contains(localPoint) ? self : nil
-            }
+        ) else {
+            // No sample — pass through (never steal Dock/desktop clicks with a fat fallback rect).
+            return nil
         }
 
-        // CGWindowListCreateImage failed — use fallback
-        return hitRect.contains(localPoint) ? self : nil
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        var pixel: [UInt8] = [0, 0, 0, 0]
+        guard let ctx = CGContext(
+            data: &pixel, width: 1, height: 1,
+            bitsPerComponent: 8, bytesPerRow: 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        // Transparent or near-transparent: let clicks reach the Dock / Finder.
+        return pixel[3] > 40 ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {

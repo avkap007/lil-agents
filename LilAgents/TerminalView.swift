@@ -76,6 +76,10 @@ class TerminalView: NSView {
 
     var characterColor: NSColor?
     var themeOverride: PopoverTheme?
+    /// Optional one-line persona note prepended to the provider placeholder.
+    var personaInputHint: String? {
+        didSet { updatePlaceholder() }
+    }
     var theme: PopoverTheme {
         var t = themeOverride ?? PopoverTheme.current
         if let color = characterColor { t = t.withCharacterColor(color) }
@@ -87,8 +91,17 @@ class TerminalView: NSView {
 
     private func updatePlaceholder() {
         let t = theme
+        let base = provider.inputPlaceholder
+        let trimmed = personaInputHint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Short line: persona tag + provider (avoid long duplicated “ask …” copy).
+        let text: String
+        if trimmed.isEmpty {
+            text = base
+        } else {
+            text = "\(trimmed) · \(provider.displayName)"
+        }
         inputField.placeholderAttributedString = NSAttributedString(
-            string: provider.inputPlaceholder,
+            string: text,
             attributes: [.font: t.font, .foregroundColor: t.textDim]
         )
     }

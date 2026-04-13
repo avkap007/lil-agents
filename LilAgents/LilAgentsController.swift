@@ -69,6 +69,12 @@ class LilAgentsController {
         char2.yOffset = -2
         char1.characterColor = NSColor(red: 1.0, green: 0.4, blue: 0.0, alpha: 1.0)
         char2.characterColor = NSColor(red: 0.4, green: 0.72, blue: 0.55, alpha: 1.0)
+        char1.themeOverride = .teenageEngineering
+        char1.personaInputHint = "Focus"
+        char1.personaShortLabel = "Work"
+        char2.themeOverride = .wii
+        char2.personaInputHint = "Draft"
+        char2.personaShortLabel = "Writing"
 
         char1.flipXOffset = 0
         char2.flipXOffset = -9
