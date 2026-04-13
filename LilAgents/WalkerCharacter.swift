@@ -107,12 +107,13 @@ class WalkerCharacter {
     var idleLoopVideoName: String? = nil
     /// Looped idle plays slower for calmer standing motion (`AVPlayer.rate`).
     var idlePlaybackRate: Float = 0.68
-    /// At the dock only: play this many full idle cycles (at `idlePlaybackRate`) before a long still.
+    /// At the dock only: play this many full idle cycles (at `idlePlaybackRate`) before the post-burst freeze.
     var idleMotionBurstLoopCount: Int = 5
     /// Brief freeze on a clean frame before idle motion (each dock cycle).
     var idleShortStillSecondsRange: ClosedRange<Double> = 2.0...5.0
-    /// After the burst, freeze on a keyframe for this long (seconds).
-    var idleLongStillSecondsRange: ClosedRange<Double> = 300...420
+    /// After N idle loops, hold the **last frame** (player paused) for this long: true stand-still, not slow idle.
+    /// One loop wall time is `activeLoopDuration / idlePlaybackRate` (e.g. ~2.1s clip at 0.68 is ~3.1s per loop).
+    var idleLongStillSecondsRange: ClosedRange<Double> = 48...90
     /// Walk clip: small slowdown; spacing is mostly from longer pauses, not extreme rate.
     var walkPlaybackRate: Float = 0.88
     /// Wave clip: played once when opening the dock popover and occasionally as an ambient one-shot at the dock.
@@ -354,6 +355,7 @@ class WalkerCharacter {
         nextAmbientWaveTime = CACurrentMediaTime() + ambientWaveIntervalSeconds + jitter
     }
 
+    /// Wall time for `idleMotionBurstLoopCount` full playthroughs of the idle MOV at `idlePlaybackRate`.
     private func dockIdleMotionBurstWallDuration() -> CFTimeInterval {
         let loops = max(idleMotionBurstLoopCount, 1)
         let r = Double(max(idlePlaybackRate, 0.05))
@@ -1982,7 +1984,8 @@ class WalkerCharacter {
             queuePlayer.pause()
             queuePlayer.seek(to: .zero)
         }
-        pauseEndTime = CACurrentMediaTime() + Double.random(in: 40.0...85.0)
+        // Next walk after this pause window (long still can push this later via `enterDockIdleLongStill`).
+        pauseEndTime = CACurrentMediaTime() + Double.random(in: 22.0...48.0)
     }
 
     func updateFlip() {

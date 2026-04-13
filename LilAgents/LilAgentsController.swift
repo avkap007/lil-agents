@@ -47,15 +47,15 @@ class LilAgentsController {
         char2.walkHorizontalMoveVideoRange = 0.12...3.92
         char1.horizontalMoveVideoRange = 3.22...7.30
         char2.horizontalMoveVideoRange = 3.22...7.30
-        // Dock idle: short still → 5 slow idle loops → long still (~5–7 min) → repeat; walk timing unchanged.
+        // Dock idle: short freeze → 5 idle loops (~15s motion) → stand-still 48–90s → repeat; walks use `pauseEndTime` (22–48s after each walk) unless long still extends it.
         char1.idlePlaybackRate = 0.68
         char2.idlePlaybackRate = 0.68
         char1.idleMotionBurstLoopCount = 5
         char2.idleMotionBurstLoopCount = 5
         char1.idleShortStillSecondsRange = 2.0...5.0
         char2.idleShortStillSecondsRange = 2.0...5.0
-        char1.idleLongStillSecondsRange = 300...420
-        char2.idleLongStillSecondsRange = 300...420
+        char1.idleLongStillSecondsRange = 48...90
+        char2.idleLongStillSecondsRange = 52...92
         char1.walkPlaybackRate = 0.88
         char2.walkPlaybackRate = 0.88
         char1.popoverWavePlaybackRate = 0.9
