@@ -71,6 +71,8 @@ class WalkerCharacter {
     }
     var window: NSWindow!
     var playerLayer: AVPlayerLayer!
+    /// Sprite view used for pixel-aware hit testing (`ignoresMouseEvents` sync).
+    private(set) var spriteHitTestView: CharacterContentView!
     var queuePlayer: AVQueuePlayer!
     var looper: AVPlayerLooper!
 
@@ -104,8 +106,10 @@ class WalkerCharacter {
     var idlePlaybackRate: Float = 0.68
     /// At the dock only: play this many full idle cycles (at `idlePlaybackRate`) before a long still.
     var idleMotionBurstLoopCount: Int = 2
-    /// After the burst, pause on the current frame for this long (seconds). Upper bound under ~45 keeps motion looping with no long still.
-    var idleLongStillSecondsRange: ClosedRange<Double> = 300...600
+    /// Brief freeze on a clean frame before idle motion (each dock cycle).
+    var idleShortStillSecondsRange: ClosedRange<Double> = 3.0...8.0
+    /// After the burst, freeze on a keyframe for this long (seconds). Very large values feel “never still.”
+    var idleLongStillSecondsRange: ClosedRange<Double> = 40...95
     /// Walk clip: small slowdown; spacing is mostly from longer pauses, not extreme rate.
     var walkPlaybackRate: Float = 0.88
     /// Wave clip: played once when opening the dock popover and occasionally as an ambient one-shot at the dock.
@@ -128,12 +132,13 @@ class WalkerCharacter {
     private var isPlayingOneShot = false
     /// Next time an ambient “desk” wave may fire (wall clock).
     private var nextAmbientWaveTime: CFTimeInterval = 0
-    /// Dock-only idle rhythm: motion burst → long still (repeat). Long still uses a keyframe seek for clean HEVC pauses.
+    /// Dock-only: short still → idle motion burst → long still → repeat. `pauseEndTime` is extended during long still so walks don’t interrupt.
     private enum DockIdleRhythmPhase {
+        case shortStill
         case motionBurst
         case longStill
     }
-    private var dockIdleRhythmPhase: DockIdleRhythmPhase = .motionBurst
+    private var dockIdleRhythmPhase: DockIdleRhythmPhase = .shortStill
     private var dockIdleRhythmPhaseEndsAt: CFTimeInterval = 0
 
     // Walk timing (per-character, from frame analysis; combined clip is ~10s)
@@ -180,7 +185,6 @@ class WalkerCharacter {
     var escapeKeyMonitor: Any?
     var currentStreamingText = ""
     weak var controller: LilAgentsController?
-    var themeOverride: PopoverTheme?
     var isAgentBusy: Bool {
         if session?.isBusy == true { return true }
         return detachedPanels.contains { $0.session.isBusy }
@@ -261,14 +265,16 @@ class WalkerCharacter {
         window.ignoresMouseEvents = false
         window.collectionBehavior = [.moveToActiveSpace, .stationary]
 
-        let hostView = CharacterContentView(frame: CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight))
-        hostView.character = self
-        hostView.wantsLayer = true
-        hostView.layer?.backgroundColor = NSColor.clear.cgColor
-        hostView.layer?.isOpaque = false
-        hostView.layer?.addSublayer(playerLayer)
+        let spriteView = CharacterContentView(frame: CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight))
+        spriteHitTestView = spriteView
+        spriteView.character = self
+        spriteView.wantsLayer = true
+        spriteView.layer?.backgroundColor = NSColor.clear.cgColor
+        spriteView.layer?.isOpaque = false
+        spriteView.layer?.addSublayer(playerLayer)
 
-        window.contentView = hostView
+        let rootView = CharacterWindowHostView(spriteView: spriteView, frame: CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight))
+        window.contentView = rootView
         window.orderFrontRegardless()
 
         let initialClip = idleLoopVideoName ?? videoName
@@ -281,7 +287,8 @@ class WalkerCharacter {
         }
         refreshPlaybackRateAfterClipChange()
         scheduleNextAmbientWave()
-        startDockIdleMotionBurst(at: CACurrentMediaTime())
+        enterDockIdleShortStill(at: CACurrentMediaTime())
+        syncMousePassthroughWithWindow()
     }
 
     deinit {
@@ -365,34 +372,53 @@ class WalkerCharacter {
         }
     }
 
-    /// Play N slow idle loops, then `tickDockIdleRhythm` moves to long still.
+    /// Phase 1: frozen on loop start (clean frame) for a few seconds.
+    private func enterDockIdleShortStill(at now: CFTimeInterval) {
+        guard idleLoopVideoName != nil else { return }
+        dockIdleRhythmPhase = .shortStill
+        let lo = idleShortStillSecondsRange.lowerBound
+        let hi = idleShortStillSecondsRange.upperBound
+        let span = max(hi - lo, 0)
+        let dur = lo + Double.random(in: 0...span)
+        dockIdleRhythmPhaseEndsAt = CACurrentMediaTime() + max(dur, 0.45)
+        seekIdleLoopToStartThen { [weak self] in
+            guard let self else { return }
+            self.queuePlayer.pause()
+            self.queuePlayer.rate = self.idlePlaybackRate
+        }
+    }
+
+    /// Phase 2: play N slow idle loops, then tick moves to long still.
     private func startDockIdleMotionBurst(at now: CFTimeInterval) {
         guard idleLoopVideoName != nil else { return }
         dockIdleRhythmPhase = .motionBurst
+        let wallDur = dockIdleMotionBurstWallDuration()
+        dockIdleRhythmPhaseEndsAt = CACurrentMediaTime() + wallDur
         seekIdleLoopToStartThen { [weak self] in
             guard let self else { return }
             self.queuePlayer.play()
             self.queuePlayer.rate = self.idlePlaybackRate
-            self.dockIdleRhythmPhaseEndsAt = CACurrentMediaTime() + self.dockIdleMotionBurstWallDuration()
         }
     }
 
-    /// Long freeze on a clean keyframe (Merit / HEVC: avoids muddy mid-GOP pauses).
+    /// Phase 3: long freeze on a clean keyframe; pushes next walk until after this ends.
     private func enterDockIdleLongStill(at now: CFTimeInterval) {
         dockIdleRhythmPhase = .longStill
         let lo = idleLongStillSecondsRange.lowerBound
         let hi = idleLongStillSecondsRange.upperBound
         let span = max(hi - lo, 0)
         let dur = lo + Double.random(in: 0...span)
+        let endAt = CACurrentMediaTime() + max(dur, 1.0)
+        dockIdleRhythmPhaseEndsAt = endAt
+        pauseEndTime = max(pauseEndTime, endAt + Double.random(in: 18...72))
         seekIdleLoopToStartThen { [weak self] in
             guard let self else { return }
             self.queuePlayer.pause()
             self.queuePlayer.rate = self.idlePlaybackRate
-            self.dockIdleRhythmPhaseEndsAt = CACurrentMediaTime() + max(dur, 45)
         }
     }
 
-    /// Dock idle: motion burst → long still → repeat (original pacing; still uses keyframe seek).
+    /// short still → motion burst → long still → repeat.
     private func tickDockIdleRhythm(now: CFTimeInterval) {
         guard idleLoopVideoName != nil,
               isPaused,
@@ -404,7 +430,7 @@ class WalkerCharacter {
         else { return }
 
         if dockIdleRhythmPhaseEndsAt == 0 {
-            startDockIdleMotionBurst(at: now)
+            enterDockIdleShortStill(at: now)
             return
         }
         if now < dockIdleRhythmPhaseEndsAt { return }
@@ -412,14 +438,16 @@ class WalkerCharacter {
         let longStillEnabled = idleLongStillSecondsRange.upperBound >= 45
 
         switch dockIdleRhythmPhase {
+        case .shortStill:
+            startDockIdleMotionBurst(at: now)
         case .motionBurst:
             if longStillEnabled {
                 enterDockIdleLongStill(at: now)
             } else {
-                startDockIdleMotionBurst(at: now)
+                enterDockIdleShortStill(at: now)
             }
         case .longStill:
-            startDockIdleMotionBurst(at: now)
+            enterDockIdleShortStill(at: now)
         }
     }
 
@@ -482,7 +510,7 @@ class WalkerCharacter {
         if let idle = idleLoopVideoName, !isWalking {
             playLoop(videoName: idle)
             refreshPlaybackRateAfterClipChange()
-            startDockIdleMotionBurst(at: CACurrentMediaTime())
+            enterDockIdleShortStill(at: CACurrentMediaTime())
             return
         }
         let clip = walkLoopVideoName ?? videoName
@@ -565,12 +593,34 @@ class WalkerCharacter {
 
     // MARK: - Visibility
 
+    /// Lets clicks reach the Dock / desktop through transparent regions. `NSView.hitTest` returning nil
+    /// is not enough on its own — the window must set `ignoresMouseEvents` when the cursor isn’t on solid sprite pixels.
+    func syncMousePassthroughWithWindow() {
+        guard let win = window else { return }
+        guard win.isVisible, isManuallyVisible, environmentHiddenAt == nil else {
+            win.ignoresMouseEvents = true
+            return
+        }
+
+        let mouseScreen = NSEvent.mouseLocation
+        guard win.frame.contains(mouseScreen) else {
+            win.ignoresMouseEvents = true
+            return
+        }
+
+        let mp = win.mouseLocationOutsideOfEventStream
+        let local = spriteHitTestView.convert(mp, from: nil)
+        let accept = spriteHitTestView.shouldAcceptMouseHit(atLocalPoint: local)
+        win.ignoresMouseEvents = !accept
+    }
+
     func setManuallyVisible(_ visible: Bool) {
         isManuallyVisible = visible
         if visible {
             if environmentHiddenAt == nil {
                 window.orderFrontRegardless()
             }
+            syncMousePassthroughWithWindow()
             if isWalking {
                 queuePlayer.play()
                 queuePlayer.rate = walkPlaybackRate
@@ -665,6 +715,8 @@ class WalkerCharacter {
         if wasBubbleVisibleBeforeEnvironmentHide {
             updateThinkingBubble()
         }
+
+        syncMousePassthroughWithWindow()
     }
 
     // MARK: - Click Handling & Popover
@@ -735,7 +787,7 @@ class WalkerCharacter {
         isPaused = true
         pauseEndTime = CACurrentMediaTime() + Double.random(in: 25.0...50.0)
         switchToIdleStandingAnimation()
-        startDockIdleMotionBurst(at: CACurrentMediaTime())
+        enterDockIdleShortStill(at: CACurrentMediaTime())
         let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
         nextAmbientWaveTime = max(nextAmbientWaveTime, push)
         controller?.completeOnboarding()
@@ -812,8 +864,11 @@ class WalkerCharacter {
     func closePopover() {
         guard isIdleForPopover else { return }
 
-        popoverWindow?.orderOut(nil)
         removeEventMonitors()
+        removePopoverBecameKeyObserver()
+        popoverWindow?.orderOut(nil)
+        popoverWindow = nil
+        terminalView = nil
 
         isIdleForPopover = false
 
@@ -836,7 +891,7 @@ class WalkerCharacter {
         switchToIdleStandingAnimation()
         let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
         nextAmbientWaveTime = max(nextAmbientWaveTime, push)
-        startDockIdleMotionBurst(at: CACurrentMediaTime())
+        enterDockIdleShortStill(at: CACurrentMediaTime())
     }
 
     private func removeEventMonitors() {
@@ -850,8 +905,20 @@ class WalkerCharacter {
         }
     }
 
+    /// Style menu preset + persona accent pass (Merit/Muse); body/layout come from the preset.
+    private var chromeThemeBase: PopoverTheme {
+        var t = PopoverTheme.current.withPersona(forAgentNamed: name)
+        switch name {
+        case "Merit", "Muse":
+            break
+        default:
+            t = t.withCharacterColor(characterColor)
+        }
+        return t
+    }
+
     var resolvedTheme: PopoverTheme {
-        (themeOverride ?? PopoverTheme.current).withCharacterColor(characterColor).withCustomFont()
+        chromeThemeBase.withCustomFont()
     }
 
     func createPopoverWindow() {
@@ -949,8 +1016,8 @@ class WalkerCharacter {
         container.addSubview(sep)
 
         let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: popoverWidth, height: popoverHeight - 29))
-        terminal.characterColor = characterColor
-        terminal.themeOverride = themeOverride
+        terminal.themeOverride = chromeThemeBase
+        terminal.characterColor = nil
         terminal.personaInputHint = personaInputHint
         terminal.provider = provider
         terminal.autoresizingMask = [.width, .height]
@@ -986,7 +1053,7 @@ class WalkerCharacter {
 
     /// Keeps the dock popover above this character's window.
     func ensurePopoverAboveCharacterWindow() {
-        guard let popover = popoverWindow, popover.isVisible else { return }
+        guard let popover = popoverWindow else { return }
         // Use a fixed level high enough to be above all character windows,
         // same as detached window so they can naturally order via clicks
         let target = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 15)
@@ -1041,7 +1108,10 @@ class WalkerCharacter {
     }
 
     func reapplyAppearanceToAllDetachedTerminals() {
+        let base = chromeThemeBase
         for panel in detachedPanels {
+            panel.terminal.themeOverride = base
+            panel.terminal.characterColor = nil
             panel.terminal.reapplyAppearanceFromTheme()
         }
     }
@@ -1196,7 +1266,7 @@ class WalkerCharacter {
         let delay = Double.random(in: 30.0...60.0)
         pauseEndTime = CACurrentMediaTime() + delay
         switchToIdleStandingAnimation()
-        startDockIdleMotionBurst(at: CACurrentMediaTime())
+        enterDockIdleShortStill(at: CACurrentMediaTime())
         let push = CACurrentMediaTime() + ambientWaveCooldownAfterPopoverSeconds
         nextAmbientWaveTime = max(nextAmbientWaveTime, push)
 
@@ -1887,7 +1957,7 @@ class WalkerCharacter {
         if let idle = idleLoopVideoName {
             playLoop(videoName: idle)
             refreshPlaybackRateAfterClipChange()
-            startDockIdleMotionBurst(at: CACurrentMediaTime())
+            enterDockIdleShortStill(at: CACurrentMediaTime())
         } else {
             queuePlayer.pause()
             queuePlayer.seek(to: .zero)
@@ -1936,11 +2006,12 @@ class WalkerCharacter {
         }
 
         if isPaused {
-            if now >= pauseEndTime {
+            tickDockIdleRhythm(now: now)
+            let inLongStill = dockIdleRhythmPhase == .longStill && now < dockIdleRhythmPhaseEndsAt
+            if now >= pauseEndTime && !inLongStill {
                 startWalk()
             } else {
                 playAmbientWaveOneShotIfDue(now: now)
-                tickDockIdleRhythm(now: now)
                 let travelDistance = max(dockWidth - displayWidth, 0)
                 let x = dockX + travelDistance * positionProgress + currentFlipCompensation
                 let bottomPadding = displayHeight * 0.15

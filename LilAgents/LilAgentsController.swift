@@ -52,14 +52,14 @@ class LilAgentsController {
         char2.idlePlaybackRate = 0.68
         char1.idleMotionBurstLoopCount = 2
         char2.idleMotionBurstLoopCount = 2
-        char1.idleLongStillSecondsRange = 300...660
-        char2.idleLongStillSecondsRange = 320...720
+        char1.idleLongStillSecondsRange = 40...95
+        char2.idleLongStillSecondsRange = 45...100
         char1.walkPlaybackRate = 0.88
         char2.walkPlaybackRate = 0.88
         char1.popoverWavePlaybackRate = 0.9
         char2.popoverWavePlaybackRate = 0.9
         char1.completionOneShotProbability = 0
-        char2.completionOneShotProbability = 0.35
+        char2.completionOneShotProbability = 1.0
         // Keep Merit visually above Muse on overlaps.
         char1.windowLevelBoost = 80
         char2.windowLevelBoost = 0
@@ -67,12 +67,10 @@ class LilAgentsController {
         char2.completionOneShotVideoName = "victory-hevc-alpha"
         char1.yOffset = -2
         char2.yOffset = -2
-        char1.characterColor = NSColor(red: 1.0, green: 0.4, blue: 0.0, alpha: 1.0)
-        char2.characterColor = NSColor(red: 0.4, green: 0.72, blue: 0.55, alpha: 1.0)
-        char1.themeOverride = .teenageEngineering
+        char1.characterColor = NSColor(red: 200 / 255, green: 55 / 255, blue: 46 / 255, alpha: 1.0)
+        char2.characterColor = NSColor(red: 165 / 255, green: 193 / 255, blue: 231 / 255, alpha: 1.0)
         char1.personaInputHint = "Focus"
         char1.personaShortLabel = "Work"
-        char2.themeOverride = .wii
         char2.personaInputHint = "Draft"
         char2.personaShortLabel = "Writing"
 
@@ -286,6 +284,10 @@ class LilAgentsController {
         }
         for char in activeChars {
             char.update(dockX: dockX, dockWidth: dockWidth, dockTopY: dockTopY)
+        }
+
+        for char in activeChars {
+            char.syncMousePassthroughWithWindow()
         }
 
         for char in activeChars {

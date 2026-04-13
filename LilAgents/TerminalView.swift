@@ -82,9 +82,10 @@ class TerminalView: NSView {
     }
     var theme: PopoverTheme {
         var t = themeOverride ?? PopoverTheme.current
-        if let color = characterColor { t = t.withCharacterColor(color) }
-        t = t.withCustomFont()
-        return t
+        if themeOverride == nil, let color = characterColor {
+            t = t.withCharacterColor(color)
+        }
+        return t.withCustomFont()
     }
 
     // MARK: - Setup
@@ -161,8 +162,8 @@ class TerminalView: NSView {
         paddedCell.textColor = t.textPrimary
         paddedCell.drawsBackground = false
         paddedCell.isBezeled = false
-        paddedCell.fieldBackgroundColor = nil
-        paddedCell.fieldCornerRadius = 0
+        paddedCell.fieldBackgroundColor = t.inputBg
+        paddedCell.fieldCornerRadius = t.inputCornerRadius
         inputField.cell = paddedCell
         updatePlaceholder()
         inputField.target = self
@@ -182,6 +183,8 @@ class TerminalView: NSView {
         if let cell = inputField.cell as? PaddedTextFieldCell {
             cell.font = t.font
             cell.textColor = t.textPrimary
+            cell.fieldBackgroundColor = t.inputBg
+            cell.fieldCornerRadius = t.inputCornerRadius
         }
         updatePlaceholder()
         needsDisplay = true
