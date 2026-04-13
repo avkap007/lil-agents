@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import OSLog
 import QuartzCore
 
 enum CharacterSize: String, CaseIterable {
@@ -21,6 +22,8 @@ enum CharacterSize: String, CaseIterable {
 }
 
 class WalkerCharacter {
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "LilAgents", category: "WalkerCharacter")
+
     /// Which chat UI initiated chrome actions (copy / refresh) when dock + detached can both exist.
     private enum ChatChromeHost {
         case dockPopover
@@ -105,11 +108,11 @@ class WalkerCharacter {
     /// Looped idle plays slower for calmer standing motion (`AVPlayer.rate`).
     var idlePlaybackRate: Float = 0.68
     /// At the dock only: play this many full idle cycles (at `idlePlaybackRate`) before a long still.
-    var idleMotionBurstLoopCount: Int = 2
+    var idleMotionBurstLoopCount: Int = 5
     /// Brief freeze on a clean frame before idle motion (each dock cycle).
-    var idleShortStillSecondsRange: ClosedRange<Double> = 3.0...8.0
-    /// After the burst, freeze on a keyframe for this long (seconds). Very large values feel “never still.”
-    var idleLongStillSecondsRange: ClosedRange<Double> = 40...95
+    var idleShortStillSecondsRange: ClosedRange<Double> = 2.0...5.0
+    /// After the burst, freeze on a keyframe for this long (seconds).
+    var idleLongStillSecondsRange: ClosedRange<Double> = 300...420
     /// Walk clip: small slowdown; spacing is mostly from longer pauses, not extreme rate.
     var walkPlaybackRate: Float = 0.88
     /// Wave clip: played once when opening the dock popover and occasionally as an ambient one-shot at the dock.
@@ -201,6 +204,9 @@ class WalkerCharacter {
     /// Which window’s title bar opened the provider menu (dock popover vs detached).
     private weak var providerMenuHostWindow: NSWindow?
 
+    /// Skips `CGWindowListCreateImage` when the cursor and window position are unchanged since last sample.
+    private var mousePassthroughCache: (mx: CGFloat, my: CGFloat, ox: CGFloat, oy: CGFloat, ignoresMouseEvents: Bool)?
+
     private static let detachedTitleLeadingInset: CGFloat = 90
     private static let detachedProviderArrowButtonTag = 901
     private static let detachedProviderClickAreaTag = 902
@@ -246,7 +252,9 @@ class WalkerCharacter {
         playerLayer.isOpaque = false
         playerLayer.frame = CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight)
 
-        let screen = NSScreen.main!
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            preconditionFailure("Lil Agents requires at least one NSScreen to place the dock window")
+        }
         let dockTopY = screen.visibleFrame.origin.y
         let bottomPadding = displayHeight * 0.15
         let y = dockTopY - bottomPadding + yOffset
@@ -308,7 +316,7 @@ class WalkerCharacter {
 
     private func playLoop(videoName: String) {
         guard let url = Bundle.main.url(forResource: videoName, withExtension: "mov") else {
-            print("Video \(videoName) not found")
+            Self.log.error("Missing bundled video resource: \(videoName, privacy: .public).mov")
             return
         }
 
@@ -418,7 +426,7 @@ class WalkerCharacter {
         }
     }
 
-    /// short still → motion burst → long still → repeat.
+    /// Short still → N idle loops (`idleMotionBurstLoopCount`) → long still (`idleLongStillSecondsRange`) → repeat. Walk timing stays `pauseEndTime` / `inLongStill`.
     private func tickDockIdleRhythm(now: CFTimeInterval) {
         guard idleLoopVideoName != nil,
               isPaused,
@@ -435,7 +443,7 @@ class WalkerCharacter {
         }
         if now < dockIdleRhythmPhaseEndsAt { return }
 
-        let longStillEnabled = idleLongStillSecondsRange.upperBound >= 45
+        let longStillEnabled = idleLongStillSecondsRange.upperBound >= 60
 
         switch dockIdleRhythmPhase {
         case .shortStill:
@@ -530,7 +538,7 @@ class WalkerCharacter {
         guard Float.random(in: 0...1) < completionOneShotProbability else { return }
         guard !isPlayingOneShot else { return }
         guard let url = Bundle.main.url(forResource: clip, withExtension: "mov") else {
-            print("Video \(clip) not found")
+            Self.log.error("Missing completion one-shot video: \(clip, privacy: .public).mov")
             return
         }
 
@@ -599,19 +607,31 @@ class WalkerCharacter {
         guard let win = window else { return }
         guard win.isVisible, isManuallyVisible, environmentHiddenAt == nil else {
             win.ignoresMouseEvents = true
+            mousePassthroughCache = nil
             return
         }
 
         let mouseScreen = NSEvent.mouseLocation
+        let origin = win.frame.origin
         guard win.frame.contains(mouseScreen) else {
             win.ignoresMouseEvents = true
+            mousePassthroughCache = nil
+            return
+        }
+
+        if let c = mousePassthroughCache,
+           abs(mouseScreen.x - c.mx) < 0.4, abs(mouseScreen.y - c.my) < 0.4,
+           abs(origin.x - c.ox) < 0.4, abs(origin.y - c.oy) < 0.4 {
+            win.ignoresMouseEvents = c.ignoresMouseEvents
             return
         }
 
         let mp = win.mouseLocationOutsideOfEventStream
         let local = spriteHitTestView.convert(mp, from: nil)
         let accept = spriteHitTestView.shouldAcceptMouseHit(atLocalPoint: local)
-        win.ignoresMouseEvents = !accept
+        let ignores = !accept
+        win.ignoresMouseEvents = ignores
+        mousePassthroughCache = (mouseScreen.x, mouseScreen.y, origin.x, origin.y, ignores)
     }
 
     func setManuallyVisible(_ visible: Bool) {
