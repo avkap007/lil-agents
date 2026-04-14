@@ -92,6 +92,13 @@ struct PopoverTheme {
         bubbleCornerRadius: 14
     )
 
+    /// Outfit palette: terracotta `#C8372E` + cream `#FAEFDC` (applied on top of the Style preset).
+    private static let meritTerracotta = NSColor(red: 200 / 255, green: 55 / 255, blue: 46 / 255, alpha: 1.0)
+    /// Outfit palette: ink `#063161` + mist `#A5C1E7`.
+    private static let museInk = NSColor(red: 6 / 255, green: 49 / 255, blue: 97 / 255, alpha: 1.0)
+    private static let museMist = NSColor(red: 165 / 255, green: 193 / 255, blue: 231 / 255, alpha: 1.0)
+    private static let museMistHighlight = NSColor(red: 197 / 255, green: 221 / 255, blue: 245 / 255, alpha: 1.0)
+
     static let wii = PopoverTheme(
         name: "Cloud",
         popoverBg: NSColor(red: 0.94, green: 0.95, blue: 0.96, alpha: 0.98),
@@ -171,6 +178,19 @@ struct PopoverTheme {
 
     // MARK: - Theme Modifiers
 
+    /// Recolors borders, accents, and bubble chrome to match Merit/Muse outfits while keeping the Style preset’s
+    /// layout (radii, fonts, backgrounds, body text).
+    func withPersona(forAgentNamed agentName: String) -> PopoverTheme {
+        switch agentName {
+        case "Merit":
+            return Self.applyingMeritAccents(to: self)
+        case "Muse":
+            return Self.applyingMuseAccents(to: self)
+        default:
+            return self
+        }
+    }
+
     func withCharacterColor(_ color: NSColor) -> PopoverTheme {
         guard name == "Peach" else { return self }
         let r = color.redComponent, g = color.greenComponent, b = color.blueComponent
@@ -216,5 +236,110 @@ struct PopoverTheme {
             bubbleCompletionBorder: bubbleCompletionBorder, bubbleCompletionText: bubbleCompletionText,
             bubbleFont: smallFont, bubbleCornerRadius: bubbleCornerRadius
         )
+    }
+
+    private static func applyingMeritAccents(to base: PopoverTheme) -> PopoverTheme {
+        let p = meritTerracotta
+        return PopoverTheme(
+            name: base.name,
+            popoverBg: base.popoverBg,
+            popoverBorder: p.withAlphaComponent(0.72),
+            popoverBorderWidth: base.popoverBorderWidth,
+            popoverCornerRadius: base.popoverCornerRadius,
+            titleBarBg: base.titleBarBg,
+            titleText: p,
+            titleFont: base.titleFont,
+            titleFormat: base.titleFormat,
+            separatorColor: p.withAlphaComponent(0.22),
+            font: base.font,
+            fontBold: base.fontBold,
+            textPrimary: base.textPrimary,
+            textDim: base.textDim,
+            accentColor: p,
+            errorColor: base.errorColor,
+            successColor: base.successColor,
+            inputBg: base.inputBg,
+            inputCornerRadius: base.inputCornerRadius,
+            bubbleBg: base.bubbleBg,
+            bubbleBorder: p.withAlphaComponent(0.52),
+            bubbleText: base.bubbleText,
+            bubbleCompletionBorder: p.withAlphaComponent(0.62),
+            bubbleCompletionText: NSColor(red: 0.55, green: 0.22, blue: 0.16, alpha: 1.0),
+            bubbleFont: base.bubbleFont,
+            bubbleCornerRadius: base.bubbleCornerRadius
+        )
+    }
+
+    private static func applyingMuseAccents(to base: PopoverTheme) -> PopoverTheme {
+        let ink = museInk
+        let mist = museMist
+        let hi = museMistHighlight
+        let darkChrome = base.popoverBg.perceivedLuminance < 0.42
+        if darkChrome {
+            return PopoverTheme(
+                name: base.name,
+                popoverBg: base.popoverBg,
+                popoverBorder: mist.withAlphaComponent(0.48),
+                popoverBorderWidth: base.popoverBorderWidth,
+                popoverCornerRadius: base.popoverCornerRadius,
+                titleBarBg: base.titleBarBg,
+                titleText: mist,
+                titleFont: base.titleFont,
+                titleFormat: base.titleFormat,
+                separatorColor: mist.withAlphaComponent(0.26),
+                font: base.font,
+                fontBold: base.fontBold,
+                textPrimary: base.textPrimary,
+                textDim: base.textDim,
+                accentColor: hi,
+                errorColor: base.errorColor,
+                successColor: base.successColor,
+                inputBg: base.inputBg,
+                inputCornerRadius: base.inputCornerRadius,
+                bubbleBg: base.bubbleBg,
+                bubbleBorder: mist.withAlphaComponent(0.42),
+                bubbleText: base.bubbleText,
+                bubbleCompletionBorder: hi.withAlphaComponent(0.55),
+                bubbleCompletionText: hi,
+                bubbleFont: base.bubbleFont,
+                bubbleCornerRadius: base.bubbleCornerRadius
+            )
+        }
+        return PopoverTheme(
+            name: base.name,
+            popoverBg: base.popoverBg,
+            popoverBorder: mist.withAlphaComponent(0.5),
+            popoverBorderWidth: base.popoverBorderWidth,
+            popoverCornerRadius: base.popoverCornerRadius,
+            titleBarBg: base.titleBarBg,
+            titleText: ink,
+            titleFont: base.titleFont,
+            titleFormat: base.titleFormat,
+            separatorColor: ink.withAlphaComponent(0.14),
+            font: base.font,
+            fontBold: base.fontBold,
+            textPrimary: base.textPrimary,
+            textDim: base.textDim,
+            accentColor: mist,
+            errorColor: base.errorColor,
+            successColor: base.successColor,
+            inputBg: base.inputBg,
+            inputCornerRadius: base.inputCornerRadius,
+            bubbleBg: base.bubbleBg,
+            bubbleBorder: mist.withAlphaComponent(0.45),
+            bubbleText: base.bubbleText,
+            bubbleCompletionBorder: ink.withAlphaComponent(0.38),
+            bubbleCompletionText: ink,
+            bubbleFont: base.bubbleFont,
+            bubbleCornerRadius: base.bubbleCornerRadius
+        )
+    }
+}
+
+private extension NSColor {
+    /// sRGB luminance 0…1 for theme contrast decisions.
+    var perceivedLuminance: CGFloat {
+        let c = usingColorSpace(.deviceRGB) ?? self
+        return c.redComponent * 0.299 + c.greenComponent * 0.587 + c.blueComponent * 0.114
     }
 }

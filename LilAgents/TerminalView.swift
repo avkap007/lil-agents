@@ -76,19 +76,33 @@ class TerminalView: NSView {
 
     var characterColor: NSColor?
     var themeOverride: PopoverTheme?
+    /// Optional one-line persona note prepended to the provider placeholder.
+    var personaInputHint: String? {
+        didSet { updatePlaceholder() }
+    }
     var theme: PopoverTheme {
         var t = themeOverride ?? PopoverTheme.current
-        if let color = characterColor { t = t.withCharacterColor(color) }
-        t = t.withCustomFont()
-        return t
+        if themeOverride == nil, let color = characterColor {
+            t = t.withCharacterColor(color)
+        }
+        return t.withCustomFont()
     }
 
     // MARK: - Setup
 
     private func updatePlaceholder() {
         let t = theme
+        let base = provider.inputPlaceholder
+        let trimmed = personaInputHint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Short line: persona tag + provider (avoid long duplicated “ask …” copy).
+        let text: String
+        if trimmed.isEmpty {
+            text = base
+        } else {
+            text = "\(trimmed) · \(provider.displayName)"
+        }
         inputField.placeholderAttributedString = NSAttributedString(
-            string: provider.inputPlaceholder,
+            string: text,
             attributes: [.font: t.font, .foregroundColor: t.textDim]
         )
     }
@@ -148,8 +162,8 @@ class TerminalView: NSView {
         paddedCell.textColor = t.textPrimary
         paddedCell.drawsBackground = false
         paddedCell.isBezeled = false
-        paddedCell.fieldBackgroundColor = nil
-        paddedCell.fieldCornerRadius = 0
+        paddedCell.fieldBackgroundColor = t.inputBg
+        paddedCell.fieldCornerRadius = t.inputCornerRadius
         inputField.cell = paddedCell
         updatePlaceholder()
         inputField.target = self
@@ -169,6 +183,8 @@ class TerminalView: NSView {
         if let cell = inputField.cell as? PaddedTextFieldCell {
             cell.font = t.font
             cell.textColor = t.textPrimary
+            cell.fieldBackgroundColor = t.inputBg
+            cell.fieldCornerRadius = t.inputCornerRadius
         }
         updatePlaceholder()
         needsDisplay = true
