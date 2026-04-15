@@ -114,6 +114,11 @@ class WalkerCharacter {
     /// After N idle loops, hold the **last frame** (player paused) for this long: true stand-still, not slow idle.
     /// One loop wall time is `activeLoopDuration / idlePlaybackRate` (e.g. ~2.1s clip at 0.68 is ~3.1s per loop).
     var idleLongStillSecondsRange: ClosedRange<Double> = 48...90
+    /// Probability [0,1] that after a motion burst the character does one more shortStill+burst cycle
+    /// before settling into longStill. Can stack up to `idleExtraBurstMax` times for natural variety.
+    var idleExtraBurstChance: Double = 0.35
+    /// Maximum number of extra burst cycles that can stack before longStill is forced.
+    var idleExtraBurstMax: Int = 2
     /// Walk clip: small slowdown; spacing is mostly from longer pauses, not extreme rate.
     var walkPlaybackRate: Float = 0.88
     /// Wave clip: played once when opening the dock popover and occasionally as an ambient one-shot at the dock.
@@ -144,6 +149,8 @@ class WalkerCharacter {
     }
     private var dockIdleRhythmPhase: DockIdleRhythmPhase = .shortStill
     private var dockIdleRhythmPhaseEndsAt: CFTimeInterval = 0
+    /// Counts consecutive extra burst cycles so we don't defer longStill indefinitely.
+    private var dockIdleExtraBurstCount: Int = 0
 
     // Walk timing (per-character, from frame analysis; combined clip is ~10s)
     /// Duration of the clip currently loaded into the looper (combined ~10s, idle loop ~2.08s).
@@ -364,6 +371,7 @@ class WalkerCharacter {
 
     private func clearDockIdleRhythmState() {
         dockIdleRhythmPhaseEndsAt = 0
+        dockIdleExtraBurstCount = 0
     }
 
     private func interruptDockIdleForOneShot() {
@@ -413,6 +421,7 @@ class WalkerCharacter {
 
     /// Phase 3: long freeze on a clean keyframe; pushes next walk until after this ends.
     private func enterDockIdleLongStill(at now: CFTimeInterval) {
+        dockIdleExtraBurstCount = 0
         dockIdleRhythmPhase = .longStill
         let lo = idleLongStillSecondsRange.lowerBound
         let hi = idleLongStillSecondsRange.upperBound
@@ -420,7 +429,10 @@ class WalkerCharacter {
         let dur = lo + Double.random(in: 0...span)
         let endAt = CACurrentMediaTime() + max(dur, 1.0)
         dockIdleRhythmPhaseEndsAt = endAt
-        pauseEndTime = max(pauseEndTime, endAt + Double.random(in: 18...72))
+        // Only extend pauseEndTime if it would end during the long still (avoid infinite deferral)
+        if pauseEndTime < endAt {
+            pauseEndTime = endAt + Double.random(in: 5...15)
+        }
         seekIdleLoopToStartThen { [weak self] in
             guard let self else { return }
             self.queuePlayer.pause()
@@ -428,7 +440,9 @@ class WalkerCharacter {
         }
     }
 
-    /// Short still → N idle loops (`idleMotionBurstLoopCount`) → long still (`idleLongStillSecondsRange`) → repeat. Walk timing stays `pauseEndTime` / `inLongStill`.
+    /// Short still → N idle loops → [maybe extra short still + burst] → long still → repeat.
+    /// Extra burst cycles (up to `idleExtraBurstMax`) add natural variation so characters don't
+    /// always freeze after exactly one burst. Walk timing stays `pauseEndTime` / `inLongStill`.
     private func tickDockIdleRhythm(now: CFTimeInterval) {
         guard idleLoopVideoName != nil,
               isPaused,
@@ -445,16 +459,19 @@ class WalkerCharacter {
         }
         if now < dockIdleRhythmPhaseEndsAt { return }
 
-        let longStillEnabled = idleLongStillSecondsRange.upperBound >= 60
-
         switch dockIdleRhythmPhase {
         case .shortStill:
             startDockIdleMotionBurst(at: now)
         case .motionBurst:
-            if longStillEnabled {
-                enterDockIdleLongStill(at: now)
-            } else {
+            // Randomly do another shortStill+burst cycle before settling into the long freeze,
+            // but cap at `idleExtraBurstMax` so it always eventually reaches longStill.
+            let canDoExtraBurst = dockIdleExtraBurstCount < idleExtraBurstMax
+            let rollExtraBurst = canDoExtraBurst && Double.random(in: 0...1) < idleExtraBurstChance
+            if rollExtraBurst {
+                dockIdleExtraBurstCount += 1
                 enterDockIdleShortStill(at: now)
+            } else {
+                enterDockIdleLongStill(at: now)
             }
         case .longStill:
             enterDockIdleShortStill(at: now)
@@ -1622,16 +1639,16 @@ class WalkerCharacter {
     // MARK: - Thinking Bubble
 
     private static let meritThinkingPhrases = [
-        "focusing...", "deep work mode...", "on the task...", "shipping mindset...",
-        "one sec...", "crunching...", "checking details...", "almost there...",
-        "bear with me...", "reviewing...", "locking in...", "getting it right...",
-        "blocking distractions...", "tightening this up...", "almost shipped..."
+        "merit brain loading…", "sharpening the red pen…", "focus arc in progress…",
+        "one sec — this one's fussy…", "debugging my own thoughts…", "almost tidy…",
+        "patience, legend…", "deep breath, deeper diff…", "shipping energy loading…",
+        "blocking chaos (softly)…", "checking the vibes and the vars…", "almost there for real…"
     ]
     private static let museThinkingPhrases = [
-        "letting this breathe...", "finding the words...", "soft focus...",
-        "drafting in my head...", "one beat...", "gentle thinking...",
-        "scribbling mentally...", "almost...", "brewing an idea...",
-        "reading between the lines...", "wandering toward an answer...", "slow and steady..."
+        "muse is brewing words…", "soft drafting in progress…", "letting this marinate…",
+        "scribbling with care…", "gentle chaos, good draft…", "typing through the vibe…",
+        "one beat, better sentence…", "finding the kinder line…", "almost… there…",
+        "reading between the pixels…", "slow ink, steady hand…", "breathing room for ideas…"
     ]
 
     private var thinkingPhrasesPool: [String] {
@@ -1643,12 +1660,13 @@ class WalkerCharacter {
     }
 
     private static let meritCompletionPhrases = [
-        "shipped.", "done.", "ready to review.", "checked in.", "there — tidy.",
-        "green light.", "wrapped."
+        "shipped.", "there — neat.", "done. you eat.", "ready when you are.",
+        "green light.", "wrapped with care.", "merit clocked that one."
     ]
     private static let museCompletionPhrases = [
-        "there you go.", "hope it flows.", "captured.", "a small gift.",
-        "typed out.", "for your notebook."
+        "there you go.", "for you, gently.", "captured — hope it sings.",
+        "typed with love.", "your notebook called; i answered.",
+        "small gift, big heart.", "flow unlocked (maybe)."
     ]
 
     private var completionPhrasesPool: [String] {
@@ -1867,15 +1885,46 @@ class WalkerCharacter {
     // MARK: - Walking
 
     /// Other dock characters whose positions we use to avoid landing stacked (no teleporting — only the planned walk endpoint moves).
+    /// Includes peers with the popover open — they still occupy `positionProgress` on the dock; excluding them let walks land on top of them.
     private func peerCharactersForSeparation() -> [WalkerCharacter] {
         guard let all = controller?.characters else { return [] }
         return all.filter { other in
-            other !== self && other.window.isVisible && other.isManuallyVisible && !other.isIdleForPopover
+            other !== self && other.window.isVisible && other.isManuallyVisible
         }
     }
 
     private var minWalkSeparationPixels: CGFloat {
-        max(displayWidth * 0.35, 72)
+        max(displayWidth * 0.45, 96)
+    }
+
+    /// Progress to use when keeping distance from a peer: their **destination** while walking (`walkEndPos`), else current `positionProgress`.
+    private func peerEffectiveProgressForSeparation(_ peer: WalkerCharacter) -> CGFloat {
+        if peer.isWalking { return peer.walkEndPos }
+        return peer.positionProgress
+    }
+
+    /// If we land too close to a peer (same tick ordering, missed avoidance, etc.), nudge `positionProgress` once.
+    private func snapProgressAwayFromPeersIfCrowded() {
+        guard currentTravelDistance > 1 else { return }
+        let peers = peerCharactersForSeparation()
+        guard !peers.isEmpty else { return }
+        let minProg = minWalkSeparationPixels / currentTravelDistance
+        var p = positionProgress
+        for _ in 0..<6 {
+            var changed = false
+            for peer in peers {
+                let pd = peerEffectiveProgressForSeparation(peer)
+                guard abs(p - pd) < minProg else { continue }
+                changed = true
+                if p <= pd {
+                    p = max(0, pd - minProg - 0.02)
+                } else {
+                    p = min(1, pd + minProg + 0.02)
+                }
+            }
+            if !changed { break }
+        }
+        positionProgress = min(max(p, 0), 1)
     }
 
     /// Nudges `end` along the same direction as `start → end` so the stop stays at least `minWalkSeparationPixels` from each peer’s current progress.
@@ -1887,7 +1936,7 @@ class WalkerCharacter {
         for _ in 0..<6 {
             var changed = false
             for peer in peers {
-                let p = peer.positionProgress
+                let p = peerEffectiveProgressForSeparation(peer)
                 guard abs(e - p) < minProg else { continue }
                 if e >= start {
                     let n = max(e, p + minProg)
@@ -1919,26 +1968,25 @@ class WalkerCharacter {
             let peers = peerCharactersForSeparation()
             if currentTravelDistance > 1,
                let nearest = peers.min(by: {
-                   abs($0.positionProgress - positionProgress) < abs($1.positionProgress - positionProgress)
+                   abs(peerEffectiveProgressForSeparation($0) - positionProgress)
+                   < abs(peerEffectiveProgressForSeparation($1) - positionProgress)
                }) {
-                let sep = abs(nearest.positionProgress - positionProgress) * currentTravelDistance
+                let nearP = peerEffectiveProgressForSeparation(nearest)
+                let sep = abs(nearP - positionProgress) * currentTravelDistance
                 if sep < minWalkSeparationPixels {
                     // Peer is to the left on the dock → go right (increase progress), and vice versa.
-                    goingRight = nearest.positionProgress < positionProgress
+                    goingRight = nearP < positionProgress
                 }
             }
         }
 
         walkStartPos = positionProgress
-        // Stride scales with dock width: wider Dock → larger pixel steps per walk (no low ceiling).
+        // walkAmountRange is a direct fraction [0,1] of dock width per walk.
+        // Pixel floor (80px) keeps tiny docks usable without capping large ones.
         let travel = max(currentTravelDistance, 1)
-        let strideScale = max(260, travel * 0.62)
-        let wideDock = travel > 720
-        let effRange: ClosedRange<CGFloat> = wideDock
-            ? max(walkAmountRange.lowerBound, 0.18)...min(walkAmountRange.upperBound * 1.12, 0.42)
-            : walkAmountRange
-        let walkPixels = CGFloat.random(in: effRange) * strideScale
-        let walkAmount = min(walkPixels / travel, 0.92)
+        let rawFraction = CGFloat.random(in: walkAmountRange)
+        let minFraction = 80.0 / travel
+        let walkAmount = min(max(rawFraction, minFraction), 0.92)
         let tentativeEnd: CGFloat
         if goingRight {
             tentativeEnd = min(walkStartPos + walkAmount, 1.0)
@@ -1985,7 +2033,8 @@ class WalkerCharacter {
             queuePlayer.seek(to: .zero)
         }
         // Next walk after this pause window (long still can push this later via `enterDockIdleLongStill`).
-        pauseEndTime = CACurrentMediaTime() + Double.random(in: 22.0...48.0)
+        pauseEndTime = CACurrentMediaTime() + Double.random(in: 15.0...30.0)
+        snapProgressAwayFromPeersIfCrowded()
     }
 
     func updateFlip() {

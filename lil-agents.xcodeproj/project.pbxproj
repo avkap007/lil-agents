@@ -36,6 +36,7 @@
 		A10000010000000000000036 /* OpenCodeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000035 /* OpenCodeSession.swift */; };
 		A10000010000000000000037 /* DockVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000036 /* DockVisibility.swift */; };
 		A10000010000000000000038 /* OpenClawSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000037 /* OpenClawSession.swift */; };
+		A10000010000000000000048 /* AgentResponseTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000048 /* AgentResponseTypography.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -69,6 +70,7 @@
 		A10000020000000000000035 /* OpenCodeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeSession.swift; sourceTree = "<group>"; };
 		A10000020000000000000036 /* DockVisibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockVisibility.swift; sourceTree = "<group>"; };
 		A10000020000000000000037 /* OpenClawSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawSession.swift; sourceTree = "<group>"; };
+		A10000020000000000000048 /* AgentResponseTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentResponseTypography.swift; sourceTree = "<group>"; };
 		A10000030000000000000001 /* lil agents.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "lil agents.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -108,6 +110,7 @@
 				A10000020000000000000037 /* OpenClawSession.swift */,
 				A10000020000000000000036 /* DockVisibility.swift */,
 				A10000020000000000000023 /* TerminalView.swift */,
+				A10000020000000000000048 /* AgentResponseTypography.swift */,
 				A10000020000000000000024 /* WalkerCharacter.swift */,
 				A10000020000000000000025 /* LilAgentsController.swift */,
 				A10000020000000000000002 /* walk-bruce-01.mov */,
@@ -237,6 +240,7 @@
 				A10000010000000000000037 /* DockVisibility.swift in Sources */,
 				A10000010000000000000038 /* OpenClawSession.swift in Sources */,
 				A10000010000000000000023 /* TerminalView.swift in Sources */,
+				A10000010000000000000048 /* AgentResponseTypography.swift in Sources */,
 				A10000010000000000000024 /* WalkerCharacter.swift in Sources */,
 				A10000010000000000000025 /* LilAgentsController.swift in Sources */,
 			);

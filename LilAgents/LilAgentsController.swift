@@ -27,13 +27,13 @@ class LilAgentsController {
         char1.fullSpeedStart = 3.75
         char1.decelStart = 8.0
         char1.walkStop = 8.5
-        char1.walkAmountRange = 0.16...0.32
+        char1.walkAmountRange = 0.35...0.80
 
         char2.accelStart = 3.0
         char2.fullSpeedStart = 3.75
         char2.decelStart = 8.0
         char2.walkStop = 8.5
-        char2.walkAmountRange = 0.16...0.32
+        char2.walkAmountRange = 0.40...0.85
         char1.displayScale = 2.28
         char2.displayScale = 2.62
         char1.idleLoopVideoName = "red-idle-hevc-alpha"
@@ -47,17 +47,21 @@ class LilAgentsController {
         char2.walkHorizontalMoveVideoRange = 0.12...3.92
         char1.horizontalMoveVideoRange = 3.22...7.30
         char2.horizontalMoveVideoRange = 3.22...7.30
-        // Dock idle: short freeze → 5 idle loops (~15s motion) → stand-still 48–90s → repeat; walks use `pauseEndTime` (22–48s after each walk) unless long still extends it.
+        // Dock idle: short freeze (2-5s) → 5 idle loops (~15s motion) → maybe 1-2 extra bursts (35% each) → long stand-still (60-180s) → repeat.
         char1.idlePlaybackRate = 0.68
         char2.idlePlaybackRate = 0.68
         char1.idleMotionBurstLoopCount = 5
         char2.idleMotionBurstLoopCount = 5
         char1.idleShortStillSecondsRange = 2.0...5.0
         char2.idleShortStillSecondsRange = 2.0...5.0
-        char1.idleLongStillSecondsRange = 48...90
-        char2.idleLongStillSecondsRange = 52...92
-        char1.walkPlaybackRate = 0.88
-        char2.walkPlaybackRate = 0.88
+        char1.idleLongStillSecondsRange = 60...180
+        char2.idleLongStillSecondsRange = 75...200
+        char1.idleExtraBurstChance = 0.35
+        char2.idleExtraBurstChance = 0.35
+        char1.idleExtraBurstMax = 2
+        char2.idleExtraBurstMax = 2
+        char1.walkPlaybackRate = 1.0
+        char2.walkPlaybackRate = 1.0
         char1.popoverWavePlaybackRate = 0.9
         char2.popoverWavePlaybackRate = 0.9
         char1.completionOneShotProbability = 0
@@ -84,8 +88,8 @@ class LilAgentsController {
         char1.positionProgress = 0.1
         char2.positionProgress = 0.9
 
-        char1.pauseEndTime = CACurrentMediaTime() + Double.random(in: 8.0...18.0)
-        char2.pauseEndTime = CACurrentMediaTime() + Double.random(in: 35.0...55.0)
+        char1.pauseEndTime = CACurrentMediaTime() + Double.random(in: 5.0...12.0)
+        char2.pauseEndTime = CACurrentMediaTime() + Double.random(in: 15.0...25.0)
 
         char1.setup()
         char2.setup()

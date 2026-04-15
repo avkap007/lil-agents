@@ -61,8 +61,12 @@ class TerminalView: NSView {
 
     private var currentAssistantText = ""
     private var lastAssistantText = ""
+    /// Plain assistant text for this user turn (survives tool breaks); used for `/copy` and `lastAssistantText` at turn end.
+    private var assistantTurnPlainTextForCopy = ""
     private var isStreaming = false
     private var showingSessionMessage = false
+    /// `NSTextStorage` location where the in-flight assistant reply begins (re-rendered as Markdown each chunk).
+    private var assistantStreamStorageStart: Int?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -130,7 +134,7 @@ class TerminalView: NSView {
         textView.isSelectable = true
         textView.backgroundColor = .clear
         textView.textColor = t.textPrimary
-        textView.font = t.font
+        textView.font = AgentResponseTypography.proseBodyFont(for: t)
         textView.isRichText = true
         textView.textContainerInset = NSSize(width: 2, height: 4)
         let defaultPara = NSMutableParagraphStyle()
@@ -175,7 +179,7 @@ class TerminalView: NSView {
     func reapplyAppearanceFromTheme() {
         let t = theme
         textView.textColor = t.textPrimary
-        textView.font = t.font
+        textView.font = AgentResponseTypography.proseBodyFont(for: t)
         textView.linkTextAttributes = [
             .foregroundColor: t.accentColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue
@@ -195,6 +199,8 @@ class TerminalView: NSView {
         currentAssistantText = ""
         lastAssistantText = ""
         showingSessionMessage = false
+        assistantStreamStorageStart = nil
+        assistantTurnPlainTextForCopy = ""
         textView.textStorage?.setAttributedString(NSAttributedString(string: ""))
     }
 
@@ -243,7 +249,8 @@ class TerminalView: NSView {
             return true
 
         case "/copy":
-            let toCopy = lastAssistantText.isEmpty ? "nothing to copy yet" : lastAssistantText
+            let latest = assistantTurnPlainTextForCopy.isEmpty ? lastAssistantText : assistantTurnPlainTextForCopy
+            let toCopy = latest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "nothing to copy yet" : latest
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(toCopy, forType: .string)
             let t = theme
@@ -298,14 +305,17 @@ class TerminalView: NSView {
 
     func appendUser(_ text: String) {
         let t = theme
+        assistantStreamStorageStart = nil
+        assistantTurnPlainTextForCopy = ""
         ensureNewline()
         let para = messageSpacing
+        let userBold = AgentResponseTypography.proseBoldFont(for: t)
         let attributed = NSMutableAttributedString()
         attributed.append(NSAttributedString(string: "> ", attributes: [
-            .font: t.fontBold, .foregroundColor: t.accentColor, .paragraphStyle: para
+            .font: userBold, .foregroundColor: t.accentColor, .paragraphStyle: para
         ]))
         attributed.append(NSAttributedString(string: "\(text)\n", attributes: [
-            .font: t.fontBold, .foregroundColor: t.textPrimary, .paragraphStyle: para
+            .font: userBold, .foregroundColor: t.textPrimary, .paragraphStyle: para
         ]))
         textView.textStorage?.append(attributed)
         scrollToBottom()
@@ -317,39 +327,60 @@ class TerminalView: NSView {
             cleaned = cleaned.replacingOccurrences(of: "^\n+", with: "", options: .regularExpression)
         }
         currentAssistantText += cleaned
-        if !cleaned.isEmpty {
-            textView.textStorage?.append(renderMarkdown(cleaned))
-            scrollToBottom()
+        assistantTurnPlainTextForCopy += cleaned
+        guard !cleaned.isEmpty, let storage = textView.textStorage else { return }
+        let t = theme
+        if assistantStreamStorageStart == nil {
+            assistantStreamStorageStart = storage.length
         }
+        let start = assistantStreamStorageStart!
+        let safeStart = min(max(0, start), storage.length)
+        if safeStart != start {
+            assistantStreamStorageStart = safeStart
+        }
+        let replaceLen = max(0, storage.length - safeStart)
+        var rendered = AgentResponseTypography.markdownAttributedString(currentAssistantText, theme: t)
+        if rendered.length == 0, !currentAssistantText.isEmpty {
+            rendered = AgentResponseTypography.plainAttributedString(currentAssistantText, theme: t)
+        }
+        storage.replaceCharacters(in: NSRange(location: safeStart, length: replaceLen), with: rendered)
+        scrollToBottom()
     }
 
     func endStreaming() {
         if isStreaming {
             isStreaming = false
-            if !currentAssistantText.isEmpty {
-                lastAssistantText = currentAssistantText
-            }
-            currentAssistantText = ""
         }
+        if !assistantTurnPlainTextForCopy.isEmpty {
+            lastAssistantText = assistantTurnPlainTextForCopy
+        }
+        currentAssistantText = ""
+        assistantTurnPlainTextForCopy = ""
+        assistantStreamStorageStart = nil
     }
 
     func appendError(_ text: String) {
         let t = theme
+        assistantStreamStorageStart = nil
+        assistantTurnPlainTextForCopy = ""
         textView.textStorage?.append(NSAttributedString(string: text + "\n", attributes: [
-            .font: t.font, .foregroundColor: t.errorColor
+            .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: t.errorColor
         ]))
         scrollToBottom()
     }
 
     func appendToolUse(toolName: String, summary: String) {
         let t = theme
-        endStreaming()
+        // Do not call `endStreaming()` here — it clears `isStreaming`, so `onTurnComplete` would skip
+        // updating `lastAssistantText` and `/copy` would miss everything after the tool.
+        assistantStreamStorageStart = nil
+        currentAssistantText = ""
         let block = NSMutableAttributedString()
         block.append(NSAttributedString(string: "  \(toolName.uppercased()) ", attributes: [
-            .font: t.fontBold, .foregroundColor: t.accentColor
+            .font: AgentResponseTypography.proseBoldFont(for: t), .foregroundColor: t.accentColor
         ]))
         block.append(NSAttributedString(string: "\(summary)\n", attributes: [
-            .font: t.font, .foregroundColor: t.textDim
+            .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: t.textDim
         ]))
         textView.textStorage?.append(block)
         scrollToBottom()
@@ -361,10 +392,10 @@ class TerminalView: NSView {
         let prefix = isError ? "  FAIL " : "  DONE "
         let block = NSMutableAttributedString()
         block.append(NSAttributedString(string: prefix, attributes: [
-            .font: t.fontBold, .foregroundColor: color
+            .font: AgentResponseTypography.proseBoldFont(for: t), .foregroundColor: color
         ]))
         block.append(NSAttributedString(string: "\(summary.isEmpty ? "" : summary)\n", attributes: [
-            .font: t.font, .foregroundColor: t.textDim
+            .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: t.textDim
         ]))
         textView.textStorage?.append(block)
         scrollToBottom()
@@ -373,182 +404,33 @@ class TerminalView: NSView {
     func replayHistory(_ messages: [AgentMessage]) {
         let t = theme
         textView.textStorage?.setAttributedString(NSAttributedString(string: ""))
+        assistantTurnPlainTextForCopy = ""
+        var lastAssistantReplay = ""
         for msg in messages {
             switch msg.role {
             case .user:
                 appendUser(msg.text)
             case .assistant:
-                textView.textStorage?.append(renderMarkdown(msg.text + "\n"))
+                lastAssistantReplay = msg.text
+                textView.textStorage?.append(AgentResponseTypography.markdownAttributedString(msg.text + "\n", theme: t))
             case .error:
                 appendError(msg.text)
             case .toolUse:
                 textView.textStorage?.append(NSAttributedString(string: "  \(msg.text)\n", attributes: [
-                    .font: t.font, .foregroundColor: t.accentColor
+                    .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: t.accentColor
                 ]))
             case .toolResult:
                 let isErr = msg.text.hasPrefix("ERROR:")
                 textView.textStorage?.append(NSAttributedString(string: "  \(msg.text)\n", attributes: [
-                    .font: t.font, .foregroundColor: isErr ? t.errorColor : t.successColor
+                    .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: isErr ? t.errorColor : t.successColor
                 ]))
             }
         }
+        lastAssistantText = lastAssistantReplay
         scrollToBottom()
     }
 
     private func scrollToBottom() {
         textView.scrollToEndOfDocument(nil)
-    }
-
-    // MARK: - Markdown Rendering
-
-    private func renderMarkdown(_ text: String) -> NSAttributedString {
-        let t = theme
-        let result = NSMutableAttributedString()
-        let lines = text.components(separatedBy: "\n")
-        var inCodeBlock = false
-        var codeBlockLang = ""
-        var codeLines: [String] = []
-
-        for (i, line) in lines.enumerated() {
-            let suffix = i < lines.count - 1 ? "\n" : ""
-
-            if line.hasPrefix("```") {
-                if inCodeBlock {
-                    let codeText = codeLines.joined(separator: "\n")
-                    let codeFont = NSFont.monospacedSystemFont(ofSize: t.font.pointSize - 1, weight: .regular)
-                    result.append(NSAttributedString(string: codeText + "\n", attributes: [
-                        .font: codeFont, .foregroundColor: t.textPrimary, .backgroundColor: t.inputBg
-                    ]))
-                    inCodeBlock = false
-                    codeLines = []
-                } else {
-                    inCodeBlock = true
-                    codeBlockLang = String(line.dropFirst(3))
-                }
-                continue
-            }
-
-            if inCodeBlock {
-                codeLines.append(line)
-                continue
-            }
-
-            if line.hasPrefix("### ") {
-                result.append(NSAttributedString(string: String(line.dropFirst(4)) + suffix, attributes: [
-                    .font: NSFont.systemFont(ofSize: t.font.pointSize, weight: .bold), .foregroundColor: t.accentColor
-                ]))
-            } else if line.hasPrefix("## ") {
-                result.append(NSAttributedString(string: String(line.dropFirst(3)) + suffix, attributes: [
-                    .font: NSFont.systemFont(ofSize: t.font.pointSize + 1, weight: .bold), .foregroundColor: t.accentColor
-                ]))
-            } else if line.hasPrefix("# ") {
-                result.append(NSAttributedString(string: String(line.dropFirst(2)) + suffix, attributes: [
-                    .font: NSFont.systemFont(ofSize: t.font.pointSize + 2, weight: .bold), .foregroundColor: t.accentColor
-                ]))
-            } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                let content = String(line.dropFirst(2))
-                result.append(NSAttributedString(string: "  \u{2022} ", attributes: [
-                    .font: t.font, .foregroundColor: t.accentColor
-                ]))
-                result.append(renderInlineMarkdown(content + suffix, theme: t))
-            } else {
-                result.append(renderInlineMarkdown(line + suffix, theme: t))
-            }
-        }
-
-        if inCodeBlock && !codeLines.isEmpty {
-            let codeText = codeLines.joined(separator: "\n")
-            let codeFont = NSFont.monospacedSystemFont(ofSize: t.font.pointSize - 1, weight: .regular)
-            result.append(NSAttributedString(string: codeText + "\n", attributes: [
-                .font: codeFont, .foregroundColor: t.textPrimary, .backgroundColor: t.inputBg
-            ]))
-        }
-
-        return result
-    }
-
-    private func renderInlineMarkdown(_ text: String, theme t: PopoverTheme) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        var i = text.startIndex
-
-        while i < text.endIndex {
-            if text[i] == "`" {
-                let afterTick = text.index(after: i)
-                if afterTick < text.endIndex, let closeIdx = text[afterTick...].firstIndex(of: "`") {
-                    let code = String(text[afterTick..<closeIdx])
-                    let codeFont = NSFont.monospacedSystemFont(ofSize: t.font.pointSize - 0.5, weight: .regular)
-                    result.append(NSAttributedString(string: code, attributes: [
-                        .font: codeFont, .foregroundColor: t.accentColor, .backgroundColor: t.inputBg
-                    ]))
-                    i = text.index(after: closeIdx)
-                    continue
-                }
-            }
-            if text[i] == "*",
-               text.index(after: i) < text.endIndex, text[text.index(after: i)] == "*" {
-                let start = text.index(i, offsetBy: 2)
-                if start < text.endIndex, let range = text.range(of: "**", range: start..<text.endIndex) {
-                    let bold = String(text[start..<range.lowerBound])
-                    result.append(NSAttributedString(string: bold, attributes: [
-                        .font: t.fontBold, .foregroundColor: t.textPrimary
-                    ]))
-                    i = range.upperBound
-                    continue
-                }
-            }
-            if text[i] == "[" {
-                let afterBracket = text.index(after: i)
-                if afterBracket < text.endIndex,
-                   let closeBracket = text[afterBracket...].firstIndex(of: "]") {
-                    let parenStart = text.index(after: closeBracket)
-                    if parenStart < text.endIndex && text[parenStart] == "(" {
-                        let afterParen = text.index(after: parenStart)
-                        if afterParen < text.endIndex,
-                           let closeParen = text[afterParen...].firstIndex(of: ")") {
-                            let linkText = String(text[afterBracket..<closeBracket])
-                            let urlStr = String(text[afterParen..<closeParen])
-                            var attrs: [NSAttributedString.Key: Any] = [
-                                .font: t.font,
-                                .foregroundColor: t.accentColor,
-                                .underlineStyle: NSUnderlineStyle.single.rawValue
-                            ]
-                            if let url = URL(string: urlStr) {
-                                attrs[.link] = url
-                                attrs[.cursor] = NSCursor.pointingHand
-                            }
-                            result.append(NSAttributedString(string: linkText, attributes: attrs))
-                            i = text.index(after: closeParen)
-                            continue
-                        }
-                    }
-                }
-            }
-            if text[i] == "h" {
-                let remaining = String(text[i...])
-                if remaining.hasPrefix("https://") || remaining.hasPrefix("http://") {
-                    var j = i
-                    while j < text.endIndex && !text[j].isWhitespace && text[j] != ")" && text[j] != ">" {
-                        j = text.index(after: j)
-                    }
-                    let urlStr = String(text[i..<j])
-                    var attrs: [NSAttributedString.Key: Any] = [
-                        .font: t.font,
-                        .foregroundColor: t.accentColor,
-                        .underlineStyle: NSUnderlineStyle.single.rawValue
-                    ]
-                    if let url = URL(string: urlStr) {
-                        attrs[.link] = url
-                    }
-                    result.append(NSAttributedString(string: urlStr, attributes: attrs))
-                    i = j
-                    continue
-                }
-            }
-            result.append(NSAttributedString(string: String(text[i]), attributes: [
-                .font: t.font, .foregroundColor: t.textPrimary
-            ]))
-            i = text.index(after: i)
-        }
-        return result
     }
 }
