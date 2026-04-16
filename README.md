@@ -30,8 +30,9 @@ the two-character setup is intentional: **merit** for work, **muse** for persona
 
 ## demo
 
-<!-- TODO: add demo gif or video embed -->
-> _demo video coming soon_
+
+
+
 
 ---
 
