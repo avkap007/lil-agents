@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="hero-thumbnail.png" alt="merit & muse on the dock" width="600"/>
+  <img src="hero-thumbnail.png" alt="merit & muse on the dock" width="380"/>
 </p>
 
 <h1 align="center">lil agents — merit & muse</h1>
