@@ -30,9 +30,7 @@ the two-character setup is intentional: **merit** for work, **muse** for persona
 
 ## demo
 
-
-
-
+https://github.com/user-attachments/assets/e728a3d6-649d-4d7a-a8e8-3a60a26c3456
 
 ---
 
