@@ -50,12 +50,20 @@ enum AgentResponseTypography {
         let lines = text.components(separatedBy: "\n")
         var inCodeBlock = false
         var codeLines: [String] = []
+        var tableLines: [String] = []
+
+        func flushTable() {
+            guard !tableLines.isEmpty else { return }
+            appendTable(&result, lines: tableLines, theme: theme, body: body, bold: bold)
+            tableLines = []
+        }
 
         for (i, line) in lines.enumerated() {
             let isLast = i == lines.count - 1
             let suffix = isLast ? "" : "\n"
 
             if line.hasPrefix("```") {
+                flushTable()
                 if inCodeBlock {
                     appendCodeBlock(&result, lines: codeLines, theme: theme, body: body)
                     inCodeBlock = false
@@ -69,6 +77,14 @@ enum AgentResponseTypography {
             if inCodeBlock {
                 codeLines.append(line)
                 continue
+            }
+
+            // Table rows: accumulate and flush as a block when the table ends.
+            if line.hasPrefix("|") {
+                tableLines.append(line)
+                continue
+            } else {
+                flushTable()
             }
 
             // Horizontal rules: suppressed — they add visual noise to conversational chat.
@@ -106,6 +122,8 @@ enum AgentResponseTypography {
                 result.append(renderInlineMarkdown(line + suffix, theme: theme, body: body, bold: bold))
             }
         }
+
+        flushTable()
 
         if inCodeBlock, !codeLines.isEmpty {
             appendCodeBlock(&result, lines: codeLines, theme: theme, body: body)
@@ -184,8 +202,8 @@ enum AgentResponseTypography {
         p.lineHeightMultiple = 1.15
         let weight: NSFont.Weight = level == 1 ? .bold : .semibold
         let font = NSFont.systemFont(ofSize: body.pointSize + bump, weight: weight)
-        // H1 uses textPrimary so it doesn't compete with accent chrome; H2/H3 use accent lightly.
-        let color = level == 1 ? theme.textPrimary : theme.accentColor
+        // All headings use textPrimary — size and weight carry the hierarchy, not color.
+        let color = theme.textPrimary
         result.append(renderInlineMarkdown(text, theme: theme, body: body, bold: bold, overrideBodyFont: font, overrideColor: color, extraParagraph: p))
     }
 
@@ -211,6 +229,88 @@ enum AgentResponseTypography {
         ]))
     }
 
+    // MARK: - Table
+
+    private static func parseTableRow(_ line: String) -> [String] {
+        var s = line.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("|") { s = String(s.dropFirst()) }
+        if s.hasSuffix("|") { s = String(s.dropLast()) }
+        return s.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    private static func isTableSeparatorRow(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        let stripped = t.filter { $0 != "|" && $0 != "-" && $0 != ":" && $0 != " " }
+        return stripped.isEmpty && t.contains("-") && t.contains("|")
+    }
+
+    private static func appendTable(
+        _ result: inout NSMutableAttributedString,
+        lines: [String],
+        theme: PopoverTheme,
+        body: NSFont,
+        bold: NSFont
+    ) {
+        let mono = codeFont(for: theme)
+
+        var headerCells: [String]? = nil
+        var dataRows: [[String]] = []
+        for line in lines {
+            if isTableSeparatorRow(line) { continue }
+            let cells = parseTableRow(line)
+            if headerCells == nil { headerCells = cells } else { dataRows.append(cells) }
+        }
+        guard let header = headerCells, !header.isEmpty else { return }
+
+        let allRows = [header] + dataRows
+        let colCount = allRows.map { $0.count }.max() ?? 0
+        guard colCount > 0 else { return }
+
+        var colWidths = Array(repeating: 2, count: colCount)
+        for row in allRows {
+            for (j, cell) in row.enumerated() where j < colCount {
+                colWidths[j] = max(colWidths[j], cell.count)
+            }
+        }
+
+        func pad(_ s: String, _ width: Int) -> String {
+            s + String(repeating: " ", count: max(0, width - s.count))
+        }
+
+        let p = NSMutableParagraphStyle()
+        p.paragraphSpacingBefore = 6
+        p.paragraphSpacing = 1
+        p.lineHeightMultiple = 1.4
+
+        // Header row — bold, textPrimary
+        let headerLine = header.enumerated().map { j, cell in pad(cell, j < colWidths.count ? colWidths[j] : cell.count) }.joined(separator: "   ")
+        result.append(NSAttributedString(string: headerLine + "\n", attributes: [
+            .font: bold, .foregroundColor: theme.textPrimary, .paragraphStyle: p
+        ]))
+
+        // Separator — thin dashes in textDim
+        let sepLine = colWidths.map { String(repeating: "─", count: $0) }.joined(separator: "   ")
+        let sepPara = NSMutableParagraphStyle(); sepPara.paragraphSpacing = 1; sepPara.lineHeightMultiple = 1.1
+        result.append(NSAttributedString(string: sepLine + "\n", attributes: [
+            .font: mono, .foregroundColor: theme.textDim, .paragraphStyle: sepPara
+        ]))
+
+        // Data rows — monospace, textPrimary
+        let rowPara = NSMutableParagraphStyle(); rowPara.paragraphSpacing = 1; rowPara.lineHeightMultiple = 1.4
+        for row in dataRows {
+            let rowLine = (0..<colCount).map { j -> String in
+                let cell = j < row.count ? row[j] : ""
+                return pad(cell, j < colWidths.count ? colWidths[j] : cell.count)
+            }.joined(separator: "   ")
+            result.append(NSAttributedString(string: rowLine + "\n", attributes: [
+                .font: mono, .foregroundColor: theme.textPrimary, .paragraphStyle: rowPara
+            ]))
+        }
+
+        // Trailing spacer
+        result.append(paragraphSpacer(body: body))
+    }
+
     /// Bullet item with hanging indent so wrapped lines align to the text, not the bullet.
     private static func appendBulletItem(
         _ result: inout NSMutableAttributedString,
@@ -219,16 +319,17 @@ enum AgentResponseTypography {
         body: NSFont,
         bold: NSFont
     ) {
-        let indent: CGFloat = 16
+        let bulletIndent: CGFloat = 4
+        let contentIndent: CGFloat = 16
         let p = NSMutableParagraphStyle()
-        p.firstLineHeadIndent = 0
-        p.headIndent = indent
+        p.firstLineHeadIndent = bulletIndent
+        p.headIndent = contentIndent
         p.paragraphSpacing = 3
         p.lineHeightMultiple = 1.32
-        let tab = NSTextTab(textAlignment: .natural, location: indent)
+        let tab = NSTextTab(textAlignment: .natural, location: contentIndent)
         p.tabStops = [tab]
-        let bulletChar = "\t•\t"
-        let marker = NSAttributedString(string: bulletChar, attributes: [
+        // bullet at firstLineHeadIndent, single tab jumps to contentIndent where text begins
+        let marker = NSAttributedString(string: "•\t", attributes: [
             .font: body, .foregroundColor: theme.accentColor, .paragraphStyle: p
         ])
         result.append(marker)
@@ -244,15 +345,17 @@ enum AgentResponseTypography {
         body: NSFont,
         bold: NSFont
     ) {
-        let indent: CGFloat = 20
+        let numIndent: CGFloat = 4
+        let contentIndent: CGFloat = 20
         let p = NSMutableParagraphStyle()
-        p.firstLineHeadIndent = 0
-        p.headIndent = indent
+        p.firstLineHeadIndent = numIndent
+        p.headIndent = contentIndent
         p.paragraphSpacing = 3
         p.lineHeightMultiple = 1.32
-        let tab = NSTextTab(textAlignment: .natural, location: indent)
+        let tab = NSTextTab(textAlignment: .natural, location: contentIndent)
         p.tabStops = [tab]
-        let marker = NSAttributedString(string: "\t\(number).\t", attributes: [
+        // number at firstLineHeadIndent, single tab jumps to contentIndent where text begins
+        let marker = NSAttributedString(string: "\(number).\t", attributes: [
             .font: bold, .foregroundColor: theme.accentColor, .paragraphStyle: p
         ])
         result.append(marker)
@@ -294,7 +397,7 @@ enum AgentResponseTypography {
                     let codeFont = codeFont(for: theme)
                     let attrs: [NSAttributedString.Key: Any] = [
                         .font: codeFont,
-                        .foregroundColor: theme.accentColor,
+                        .foregroundColor: theme.textPrimary,
                         .backgroundColor: theme.inputBg,
                         .paragraphStyle: bodyParagraph
                     ]

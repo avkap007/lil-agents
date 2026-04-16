@@ -375,12 +375,13 @@ class TerminalView: NSView {
         // updating `lastAssistantText` and `/copy` would miss everything after the tool.
         assistantStreamStorageStart = nil
         currentAssistantText = ""
+        let mono = AgentResponseTypography.codeFont(for: t)
         let block = NSMutableAttributedString()
         block.append(NSAttributedString(string: "  \(toolName.uppercased()) ", attributes: [
             .font: AgentResponseTypography.proseBoldFont(for: t), .foregroundColor: t.accentColor
         ]))
         block.append(NSAttributedString(string: "\(summary)\n", attributes: [
-            .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: t.textDim
+            .font: mono, .foregroundColor: t.textDim
         ]))
         textView.textStorage?.append(block)
         scrollToBottom()
@@ -388,14 +389,15 @@ class TerminalView: NSView {
 
     func appendToolResult(summary: String, isError: Bool) {
         let t = theme
-        let color = isError ? t.errorColor : t.successColor
+        let labelColor = isError ? t.errorColor : t.successColor
         let prefix = isError ? "  FAIL " : "  DONE "
+        let mono = AgentResponseTypography.codeFont(for: t)
         let block = NSMutableAttributedString()
         block.append(NSAttributedString(string: prefix, attributes: [
-            .font: AgentResponseTypography.proseBoldFont(for: t), .foregroundColor: color
+            .font: AgentResponseTypography.proseBoldFont(for: t), .foregroundColor: labelColor
         ]))
         block.append(NSAttributedString(string: "\(summary.isEmpty ? "" : summary)\n", attributes: [
-            .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: t.textDim
+            .font: mono, .foregroundColor: t.textDim
         ]))
         textView.textStorage?.append(block)
         scrollToBottom()
@@ -416,13 +418,15 @@ class TerminalView: NSView {
             case .error:
                 appendError(msg.text)
             case .toolUse:
+                let monoUse = AgentResponseTypography.codeFont(for: t)
                 textView.textStorage?.append(NSAttributedString(string: "  \(msg.text)\n", attributes: [
-                    .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: t.accentColor
+                    .font: monoUse, .foregroundColor: t.textDim
                 ]))
             case .toolResult:
                 let isErr = msg.text.hasPrefix("ERROR:")
+                let monoRes = AgentResponseTypography.codeFont(for: t)
                 textView.textStorage?.append(NSAttributedString(string: "  \(msg.text)\n", attributes: [
-                    .font: AgentResponseTypography.proseBodyFont(for: t), .foregroundColor: isErr ? t.errorColor : t.successColor
+                    .font: monoRes, .foregroundColor: isErr ? t.errorColor : t.textDim
                 ]))
             }
         }

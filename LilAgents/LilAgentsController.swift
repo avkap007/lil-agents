@@ -12,6 +12,9 @@ class LilAgentsController {
         let char1 = WalkerCharacter(videoName: "red-combined-10s-hevc-alpha", name: "Merit")
         let char2 = WalkerCharacter(videoName: "blue-combined-10s-hevc-alpha", name: "Muse")
 
+        // Temporary: always reset onboarding state for demos/tests.
+        //UserDefaults.standard.removeObject(forKey: Self.onboardingKey)
+
         // Detect available providers, then set first-run defaults
         AgentProvider.detectAvailableProviders { [weak char1, weak char2] in
             guard let char1 = char1, let char2 = char2 else { return }
